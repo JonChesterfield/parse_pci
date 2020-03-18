@@ -16,23 +16,11 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-// Make the tests faster...
-static unsigned char *vendor_accel[UINT16_MAX] = {0};
-
 unsigned char *find_vendor(unsigned char *d, size_t n, uint16_t VendorId) {
-  {
-    unsigned char *a = vendor_accel[VendorId];
-    if (a) {
-      return a;
-    }
-  }
   char needle[5];
   sprintf(needle, "\n%04X", VendorId);
-  unsigned char *res = memmem(d, n, needle, sizeof(needle));
-  if (res) {
-    vendor_accel[VendorId] = res;
-  }
-  return res;
+  // probably the hot spot
+  return memmem(d, n, needle, sizeof(needle));
 }
 
 unsigned char *find_any_vendor(unsigned char *d, size_t n) {
@@ -61,10 +49,67 @@ unsigned char *find_any_vendor(unsigned char *d, size_t n) {
   }
 }
 
+typedef struct {
+  unsigned char *start;
+  unsigned char *end;
+} range_t;
+
+range_t find_vendor_range(unsigned char *d, size_t n, uint16_t VendorId) {
+  unsigned char *start = find_vendor(d, n, VendorId);
+  if (start) {
+    size_t moved = (unsigned char *)start - (unsigned char *)d;
+
+    // search from just past vendor initially looked for
+    unsigned char *end = find_any_vendor(start + 1, n - moved - 1);
+    if (!end) {
+      end = d + n;
+    }
+
+    return (range_t){.start = start, .end = end};
+  }
+
+  return (range_t){.start = NULL};
+}
+
 unsigned char *find_device(unsigned char *d, size_t n, uint16_t DeviceId) {
   char needle[6] = {0};
   sprintf(needle, "\n\t%04x", DeviceId);
   return memmem(d, n, needle, sizeof(needle));
+}
+
+char *find_device_within_range(range_t vendor, char *buf, int size,
+                               const uint16_t DeviceId) {
+  assert(vendor.start);
+  unsigned char *dev =
+      find_device(vendor.start, vendor.end - vendor.start, DeviceId);
+
+  if (!dev) {
+    snprintf(buf, size - 1, "Device %04x", DeviceId);
+    buf[size - 1] = 0;
+    return buf;
+  }
+
+  // Found = '\n\txxxx -some-whitespace- string - newline
+  dev += 6; // todo: drop the 6
+
+  // Trim leading whitespace
+  while (dev != vendor.end && isspace(*dev)) {
+    dev++;
+  }
+
+  // find next newline or end of file
+  unsigned char *newline = dev;
+  while (newline != vendor.end && *newline != '\n') {
+    newline++;
+  }
+
+  size_t str = newline - dev;
+  size_t to_copy = (int)str < (size - 1) ? str : (size - 1);
+
+  memcpy(buf, dev, to_copy);
+  buf[to_copy] = 0;
+
+  return buf;
 }
 
 char *lookup_name_from_mmap(unsigned char *d, size_t sz,
@@ -77,13 +122,12 @@ char *lookup_name_from_mmap(unsigned char *d, size_t sz,
   if (verbose) {
     printf("Look up %x/%x\n", VendorId, DeviceId);
   }
-  const unsigned char *e = d + sz;
   if (verbose) {
     printf("File size %zu\n", sz);
   }
 
-  unsigned char *found = find_vendor(d, sz, VendorId);
-  if (!found) {
+  range_t vendor = find_vendor_range(d, sz, VendorId);
+  if (!vendor.start) {
     //  If this fails, checking all the device IDs is a poor choice
     *no_vendor = true;
 
@@ -92,59 +136,8 @@ char *lookup_name_from_mmap(unsigned char *d, size_t sz,
     buf[size - 1] = 0;
     return buf;
   }
-  assert(found == find_any_vendor(found, sz));
 
-  if (verbose) {
-    printf("Scan from %p, found at %p\n", d, found);
-  }
-
-  size_t moved = (unsigned char *)found - (unsigned char *)d;
-  d = found;
-  sz -= moved;
-
-  if (verbose) {
-    printf("Found vendor after %zu bytes, leaving %zu\n", moved, sz);
-  }
-
-  const unsigned char *next = find_any_vendor(found + 1, sz - 1);
-  if (!next) {
-    printf("find_any_failed, using end\n");
-    next = e;
-  }
-
-  if (verbose) {
-    printf("looking for device between %p and %p\n", found, next);
-    printf("%.*s\n", (int)(10 + next - found), found);
-  }
-
-  found = find_device(d, next - found, DeviceId);
-
-  if (!found) {
-    snprintf(buf, size - 1, "Device %04x", DeviceId);
-    buf[size - 1] = 0;
-    return buf;
-  }
-
-  // Found = '\n\txxxx -some-whitespace- string - newline
-  found += 6; // todo: drop the 6
-
-  while (found != e && isspace(*found)) {
-    found++;
-  }
-
-  // find next newline or end of file
-  unsigned char *newline = found;
-  while (newline != e && *newline != '\n') {
-    newline++;
-  }
-
-  size_t str = newline - found;
-  size_t to_copy = (int)str < (size - 1) ? str : (size - 1);
-
-  memcpy(buf, found, to_copy);
-  buf[to_copy] = 0;
-
-  return buf;
+  return find_device_within_range(vendor, buf, size, DeviceId);
 }
 
 typedef struct {
@@ -226,7 +219,8 @@ MAIN_MODULE() {
 
   const bool skip_unknown_vendors = false;
 
-  TEST("") {
+  TEST("linear") {
+    return;
     mmapped_file_t file = open_mmapped_file();
     CHECK(file.valid);
     if (file.valid) {
@@ -282,6 +276,47 @@ MAIN_MODULE() {
             // printf("Can't find vendor %x, skipping devices\n", VendorId);
             break;
           }
+        }
+      }
+    }
+    close_mmapped_file(file);
+  }
+
+  TEST("faster") {
+    mmapped_file_t file = open_mmapped_file();
+    CHECK(file.valid);
+    if (file.valid) {
+      char rbuffer[128] = {0};
+      char pbuffer[sizeof(rbuffer)] = {0};
+      int size = sizeof(rbuffer);
+
+      uint16_t VegaDeviceId = 26287;
+      uint16_t AMDVendorId = 4098;
+      (void)VegaDeviceId;
+      (void)AMDVendorId;
+
+      for (uint32_t VendorId = 0; VendorId < UINT16_MAX; VendorId++) {
+
+        range_t vendor = find_vendor_range(file.addr, file.size, VendorId);
+
+        if (!vendor.start) {
+          // Reference will return "Device xxxx", can check out of line
+          continue;
+        }
+
+        printf("Check vendor %u (%x)\n", VendorId, VendorId);
+
+        for (uint32_t DeviceId = 0; DeviceId < UINT16_MAX; DeviceId++) {
+
+          char *ref = reference(rbuffer, size, VendorId, DeviceId);
+          char *par = find_device_within_range(vendor, pbuffer, size, DeviceId);
+
+          if (!consistent(ref, par)) {
+            printf("ven/dev %u/%u: ", VendorId, DeviceId);
+            printf("%s ?= %s\n", ref, par);
+          }
+
+          CHECK(consistent(ref, par));
         }
       }
     }
