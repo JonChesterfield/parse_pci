@@ -68,7 +68,7 @@ range_t find_vendor_range(unsigned char *d, size_t n, uint16_t VendorId) {
     return (range_t){.start = start, .end = end};
   }
 
-  return (range_t){.start = NULL};
+  return (range_t){0, 0};
 }
 
 range_t find_vendor_2(range_t r, uint16_t VendorId)
@@ -89,37 +89,57 @@ range_t find_device_2(range_t r, uint16_t DeviceId) {
   assert(r.start != r.end);
   assert(r.start[0] == '\n');
 
-  // Move to start of line
-  r.start++;
+  char needle[7] = {0};
+  int rc = sprintf(needle, "\n\t%04x", DeviceId);
+  assert(rc >= 0); // todo: check
 
-  char needle[5] = {0};
-  sprintf(needle, "\t%04x", DeviceId);
+  for (unsigned idx = 0;; idx++) {
+    size_t width = r.end - r.start;
 
-  size_t width = r.end - r.start;
-  if (width < 6) {
-    goto fail;
+    if (width < 6) {
+      goto fail;
+    }
+
+    unsigned char *end = memchr(r.start + 1, '\n', width - 1);
+    if (!end) {
+      end = r.end;
+    }
+
+    if (memcmp(r.start, needle, 6) == 0) {
+      // matched. Narrow the range to the printed result
+      r.start += 6;
+      r.end = end;
+      // trim leading whitespace
+      while (r.start != r.end && isspace(*r.start)) {
+        r.start++;
+      }
+
+      if (r.start != r.end) {
+        // TODO: test this logic
+        unsigned char *c = r.end;
+        c--;
+        while (r.start != c && isspace(*c)) {
+          c--;
+        }
+        r.end = c + 1;
+      }
+
+      // need to trim the tail too
+
+      // trim whitespace from both ends
+      return r;
+    }
+
+    if (isxdigit(r.start[0])) {
+      // Reached the end of this region
+      printf("Fail at %d\n", __LINE__);
+      goto fail;
+    }
+
+    // Otherwise ignore whatever is on the line, e.g. '#'
+
+    r.start = end;
   }
-
-  unsigned char *end = memchr(r.start + 1, '\n', width - 1);
-  if (!end) {
-    end = r.end;
-  }
-
-  if (memcmp(r.start, needle, 5) == 0) {
-    // matched. Narrow the range to the printed result
-    r.start += 5;
-    r.end = end;
-    // trim whitespace from both ends
-
-    return r;
-  }
-
-  if (isxdigit(r.start[0])) {
-    // Reached the end of this region
-    goto fail;
-  }
-
-  // Otherwise ignore whatever is on the line, e.g. '#'
 
 fail:
   return (range_t){0, 0};
@@ -135,6 +155,26 @@ unsigned char *find_device(unsigned char *d, size_t n, uint16_t DeviceId) {
 char *find_device_within_range(range_t vendor, char *buf, int size,
                                const uint16_t DeviceId) {
   assert(vendor.start);
+
+  bool novel = true;
+
+  if (novel) {
+
+    range_t dev_r = find_device_2(vendor, DeviceId);
+    if (dev_r.start == dev_r.end) {
+      snprintf(buf, size - 1, "Device %04x", DeviceId);
+      buf[size - 1] = 0;
+      return buf;
+    } else {
+      // todo: width
+      int to_copy = (int)(dev_r.end - dev_r.start);
+      to_copy = to_copy < (size - 1) ? to_copy : size - 1;
+      memcpy(buf, dev_r.start, to_copy);
+      buf[to_copy] = 0;
+      return buf;
+    }
+  }
+
   unsigned char *dev =
       find_device(vendor.start, vendor.end - vendor.start, DeviceId);
 
@@ -172,7 +212,7 @@ char *lookup_name_from_mmap(unsigned char *d, size_t sz,
                             /* skip flags */ const uint16_t VendorId,
                             const uint16_t DeviceId, bool *no_vendor) {
 
-  const bool verbose = false;
+  const bool verbose = true;
 
   if (verbose) {
     printf("Look up %x/%x\n", VendorId, DeviceId);
