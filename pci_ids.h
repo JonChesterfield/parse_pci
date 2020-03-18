@@ -39,8 +39,8 @@ struct pci_ids {
 struct pci_ids pci_ids_create(void);
 void pci_ids_destroy(struct pci_ids);
 
-// Writes to buf. Does not fail.
-void pci_ids_lookup(struct pci_ids, char *buf, size_t buf_size,
+// Writes to buf. Returns buf. Does not fail. 
+char * pci_ids_lookup(struct pci_ids, char *buf, size_t buf_size,
                     uint16_t VendorId, uint16_t DeviceId);
 
 #endif

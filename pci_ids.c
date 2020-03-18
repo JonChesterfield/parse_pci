@@ -54,22 +54,30 @@
 #define _GNU_SOURCE
 #include <string.h>
 
-#include "pci_ids.h"
 
-#include "EvilUnit.h"
-#include "parse.h"
+#include "pci_ids.h"
 
 #include <assert.h>
 #include <ctype.h>
 #include <stdbool.h>
-
-#include <unistd.h> // why isn't open in this?
-
+#include <unistd.h>
 #include <sys/mman.h>
-
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+
+
+#include "EvilUnit.h"
+#include "parse.h"
+
+
+  static const char *pci_ids_paths[] = {
+      "/usr/share/hwdata/pci.ids", // update-pciids
+      "/usr/share/misc/pci.ids",   // debian
+      "/usr/share/pci.ids",        // redhat
+      "/var/lib/pciutils/pci.ids", // also debian
+      "pci.ids",
+  };
 
 static struct pci_ids pci_ids_create_from_file(const char *path) {
   struct pci_ids failure = {
@@ -106,16 +114,9 @@ static struct pci_ids pci_ids_create_from_file(const char *path) {
 }
 
 struct pci_ids pci_ids_create(void) {
-  static const char *paths[] = {
-      "/usr/share/hwdata/pci.ids", // update-pciids
-      "/usr/share/misc/pci.ids",   // debian
-      "/usr/share/pci.ids",        // redhat
-      "/var/lib/pciutils/pci.ids", // also debian
-      "pci.ids",
-  };
-  size_t sz = sizeof(paths) / sizeof(paths[0]);
+  size_t sz = sizeof(pci_ids_paths) / sizeof(pci_ids_paths[0]);
   for (size_t i = 0; i < sz; i++) {
-    struct pci_ids res = pci_ids_create_from_file(paths[i]);
+    struct pci_ids res = pci_ids_create_from_file(pci_ids_paths[i]);
     if (res.fd != -1) {
       return res;
     }
@@ -259,11 +260,11 @@ static void fill_buffer_from_device_range(char *buf, size_t size,
   }
 }
 
-void pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
+char * pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
                      uint16_t VendorId, uint16_t DeviceId) {
   if (f.fd == -1) {
     write_fallback_to_buffer(buf, size, DeviceId);
-    return;
+    return buf;
   }
 
   struct range whole_file = {
@@ -280,6 +281,8 @@ void pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
   } else {
     write_fallback_to_buffer(buf, size, DeviceId);
   }
+
+  return buf;
 }
 
 static bool consistent(char *ref, char *prop) {
@@ -305,7 +308,46 @@ static MODULE(write_as_four_hex) {
 MAIN_MODULE() {
   DEPENDS(write_as_four_hex);
 
+  TEST("external")
+    {
+    struct pci_ids file = pci_ids_create();
+    CHECK(file.fd != -1);
+    if (file.fd != -1) {
+      char rbuffer[128] = {0};
+      char pbuffer[sizeof(rbuffer)] = {0};
+      size_t size = sizeof(rbuffer);
+
+      uint16_t VegaDeviceId = 26287;
+      uint16_t AMDVendorId = 4098;
+      (void)VegaDeviceId;
+      (void)AMDVendorId;
+
+      for (uint32_t VendorId = 0; VendorId < UINT16_MAX; VendorId++) {
+
+        printf("Check vendor %u (0x%04x)\n", VendorId, VendorId);
+
+        for (uint32_t DeviceId = 0; DeviceId < UINT16_MAX; DeviceId++) {
+
+          char *ref = reference(rbuffer, size, VendorId, DeviceId);
+         char *par = pci_ids_lookup(file,
+                                     pbuffer, size, VendorId, DeviceId);
+
+          if (!consistent(ref, par)) {
+            printf("ven/dev %u/%u: ", VendorId, DeviceId);
+            printf("%s ?= %s\n", ref, par);
+          }
+
+          CHECK(consistent(ref, par));
+        }
+      }
+    }
+    pci_ids_destroy(file);
+
+
+    }
+  
   TEST("") {
+    return;
     struct pci_ids file = pci_ids_create();
     CHECK(file.fd != -1);
     if (file.fd != -1) {

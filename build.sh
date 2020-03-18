@@ -6,9 +6,9 @@ OPT=`which opt`
 
 CFLAG="-g -O2 -Wall -Wextra"
 $CC $CFLAG reference.c -c -o reference.o
-$CC $CFLAG main.c -c -emit-llvm -o main.bc
-$OPT -strip-debug main.bc -S -o main.ll
+$CC $CFLAG pci_ids.c -c -emit-llvm -o pci_ids.bc
+$OPT -strip-debug pci_ids.bc -S -o pci_ids.ll
 
-$CC main.bc reference.o -o main -lpci
+$CC pci_ids.bc reference.o -o pci_ids -lpci
 
-time ./main
+time ./pci_ids
