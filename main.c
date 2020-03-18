@@ -89,7 +89,7 @@ static struct pci_ids pci_ids_create_from_file(const char *path) {
     close(fd);
     return failure;
   }
-  // No attempt to read files > 4gb in size
+  
   sz = (sz < UINT32_MAX) ? sz : UINT32_MAX;
   void *addr = mmap(0, sz, PROT_READ, MAP_PRIVATE, fd, 0);
 
@@ -259,11 +259,11 @@ static void fill_buffer_from_device_range(char *buf, size_t size,
   }
 }
 
-char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
+void pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
                      uint16_t VendorId, uint16_t DeviceId) {
   if (f.fd == -1) {
     write_fallback_to_buffer(buf, size, DeviceId);
-    return buf;
+    return;
   }
 
   struct range whole_file = {
@@ -280,8 +280,6 @@ char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
   } else {
     write_fallback_to_buffer(buf, size, DeviceId);
   }
-
-  return buf;
 }
 
 static bool consistent(char *ref, char *prop) {
