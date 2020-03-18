@@ -171,7 +171,7 @@ static struct range find_vendor(struct range r, uint16_t VendorId)
 	return r;
 }
 
-struct range trim_whitespace(struct range r)
+static struct range trim_whitespace(struct range r)
 {
 	while (!empty_range(r) && isspace(r.start[0])) {
 		r.start++;
@@ -182,7 +182,7 @@ struct range trim_whitespace(struct range r)
 	return r;
 }
 
-struct range skip_vendor_id(struct range r)
+static struct range skip_vendor_id(struct range r)
 {
 	struct range failure = { 0, 0 };
 
