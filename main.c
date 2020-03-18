@@ -141,7 +141,6 @@ char *lookup_name_from_mmap(unsigned char *d, size_t sz,
 }
 
 typedef struct {
-  bool valid;
   int fd;
   void *addr;
   size_t size;
@@ -151,7 +150,7 @@ mmapped_file_t open_mmapped_file(void) {
 
   const char *path = "pci.ids";
   mmapped_file_t res = {
-      .valid = false,
+      .fd = -1,
   };
 
   int fd = open(path, O_RDONLY, 0);
@@ -162,6 +161,9 @@ mmapped_file_t open_mmapped_file(void) {
   struct stat sb;
   fstat(fd, &sb);
   size_t sz = sb.st_size;
+
+  // No attempt to read files > 4gb in size
+  sz = (sz < UINT32_MAX) ? sz : UINT32_MAX;
   void *vd = mmap(0, sz, PROT_READ, MAP_PRIVATE, fd, 0);
 
   if (vd == MAP_FAILED) {
@@ -172,15 +174,13 @@ mmapped_file_t open_mmapped_file(void) {
   res.fd = fd;
   res.addr = vd;
   res.size = sz;
-  res.valid = true;
   return res;
 }
 
 void close_mmapped_file(mmapped_file_t f) {
-  if (f.valid) {
+  if (f.fd != -1) {
     munmap(f.addr, f.size);
     close(f.fd);
-    f.valid = false;
   }
 }
 
@@ -191,7 +191,8 @@ char *lookup_name(/*optional struct*/ char *buf, int size,
 
   mmapped_file_t f = open_mmapped_file();
 
-  if (!f.valid) {
+  // Wrong failure mode
+  if (f.fd != -1) {
     return "<file i/o failed>";
   }
 
@@ -222,8 +223,8 @@ MAIN_MODULE() {
   TEST("linear") {
     return;
     mmapped_file_t file = open_mmapped_file();
-    CHECK(file.valid);
-    if (file.valid) {
+    CHECK(file.fd != -1);
+    if (file.fd != -1) {
       char rbuffer[128] = {0};
       char pbuffer[sizeof(rbuffer)] = {0};
       int size = sizeof(rbuffer);
@@ -284,8 +285,8 @@ MAIN_MODULE() {
 
   TEST("faster") {
     mmapped_file_t file = open_mmapped_file();
-    CHECK(file.valid);
-    if (file.valid) {
+    CHECK(file.fd != -1);
+    if (file.fd != -1) {
       char rbuffer[128] = {0};
       char pbuffer[sizeof(rbuffer)] = {0};
       int size = sizeof(rbuffer);
