@@ -33,6 +33,14 @@ struct range {
 };
 static bool empty_range(struct range r) { return r.start == r.end; }
 
+static void write_as_four_hex_chars(uint16_t x, char *b) {
+  const char digits[] = "0123456789abcdef";
+  for (unsigned i = 0; i < 4; i++) {
+    unsigned index = 0xf & (x >> 4 * (3 - i));
+    b[i] = digits[index];
+  }
+}
+
 static struct range find_vendor(struct range r, uint16_t VendorId)
 
 {
@@ -40,10 +48,9 @@ static struct range find_vendor(struct range r, uint16_t VendorId)
     return r;
   }
 
-  char needle[6];
-  int rc = snprintf(needle, sizeof(needle), "\n%04x", VendorId);
-  assert(rc == 5);
-  unsigned char *s = memmem(r.start, r.end - r.start, needle, 5);
+  char needle[5] = "\n0000";
+  write_as_four_hex_chars(VendorId, &needle[1]);
+  unsigned char *s = memmem(r.start, r.end - r.start, needle, sizeof(needle));
 
   if (s) {
     r.start = s;
@@ -87,22 +94,11 @@ static struct range find_device(struct range r, uint16_t DeviceId) {
 
   assert(r.start[0] == '\n');
 
-  char needle[7] = {0};
-  int rc = sprintf(needle, "\n\t%04x", DeviceId);
-  assert(rc == 6); // todo: check
+  char needle[6] = "\n\t0000";
+  write_as_four_hex_chars(DeviceId, &needle[2]);
 
-  const bool verbose = false;
-  if (verbose) {
-    printf("Seeking dev %u/%04x\n", DeviceId, DeviceId);
-    printf("Needle %s\n", needle);
-  }
-
-  for (unsigned idx = 0;; idx++) {
+  for (;;) {
     size_t width = r.end - r.start;
-
-    if (verbose) {
-      printf("idx %u, width %zu: %.*s\n", idx, width, (int)width, r.start);
-    }
 
     if (width < 6) {
       goto fail;
@@ -113,26 +109,17 @@ static struct range find_device(struct range r, uint16_t DeviceId) {
       end = r.end;
     }
 
-    if (memcmp(r.start, needle, 6) == 0) {
+    if (memcmp(r.start, needle, sizeof(needle)) == 0) {
       // matched. Narrow the range to the printed result
       r.start += 6;
       r.end = end;
-      // trim leading whitespace
-      while (!empty_range(r) && isspace(*r.start)) {
+      // trim leading and trailing whitespace
+      while (!empty_range(r) && isspace(r.start[0])) {
         r.start++;
       }
-
-      if (false && !empty_range(r)) {
-        // TODO: test this logic
-        unsigned char *c = r.end;
-        c--;
-        while (r.start != c && isspace(*c)) {
-          c--;
-        }
-        r.end = c + 1;
+      while (!empty_range(r) && isspace(r.end[-1])) {
+        r.end--;
       }
-
-      // need to trim the tail too
 
       // trim whitespace from both ends
       return r;
@@ -161,9 +148,14 @@ static void copy_range_to_buffer(struct range r, char *buf, int size) {
   buf[to_copy] = '\0';
 }
 
-static void write_fallback_to_buffer(char *buf, int size, uint16_t DeviceId) {
-  int rc = snprintf(buf, size - 1, "Device %04x", DeviceId);
-  // todo: something with rc failing?
+__attribute__((used)) static void write_fallback_to_buffer(char *buf, int size,
+                                                           uint16_t DeviceId) {
+  char tmp[] = "Device xxxx";
+  static_assert(sizeof(tmp) == 12, "");
+  write_as_four_hex_chars(DeviceId, &tmp[7]);
+
+  int to_copy = ((int)sizeof(tmp) <= size) ? sizeof(tmp) : size;
+  memcpy(buf, tmp, to_copy);
   buf[size - 1] = '\0';
 }
 
@@ -265,7 +257,20 @@ static bool consistent(char *ref, char *prop) {
   }
 }
 
+static MODULE(write_as_four_hex) {
+  TEST("vs sprintf") {
+    char ref[5];
+    char val[4];
+    for (uint32_t i = 0; i < UINT16_MAX; i++) {
+      write_as_four_hex_chars(i, val);
+      CHECK(4 == snprintf(ref, 5, "%04x", i));
+      CHECK(memcmp(ref, val, 4) == 0);
+    }
+  }
+}
+
 MAIN_MODULE() {
+  DEPENDS(write_as_four_hex);
 
   TEST("") {
     mmapped_file_t file = open_mmapped_file();
@@ -298,7 +303,7 @@ MAIN_MODULE() {
           char *ref = reference(rbuffer, size, VendorId, DeviceId);
 
           struct range device = find_device(vendor, DeviceId);
-          
+
           fill_buffer_from_device_range(pbuffer, size, device, DeviceId);
           char *par = pbuffer;
 
