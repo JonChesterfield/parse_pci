@@ -4,10 +4,9 @@
 #include "EvilUnit.h"
 #include "parse.h"
 
-#include <stdbool.h>
-#define _GNU_SOURCE
+#include <assert.h>
 #include <ctype.h>
-#include <string.h>
+#include <stdbool.h>
 
 #include <unistd.h> // why isn't open in this?
 
@@ -28,12 +27,37 @@ unsigned char *find_vendor(unsigned char *d, size_t n, uint16_t VendorId) {
   return memmem(d, n, needle, sizeof(needle));
 }
 
+unsigned char *find_any_vendor(unsigned char *d, size_t n) {
+  // messy
+  while (1) {
+
+    unsigned char *nl = memchr(d, '\n', n);
+    if (!nl) {
+      return NULL;
+    }
+    size_t moved = nl - d;
+    d = nl;
+    n -= moved;
+
+    if (n <= 1) {
+      return NULL;
+    }
+
+    // todo: it's a vendor if the line starts with a (four?) hex digit
+    if (d[1] != '\t') {
+      return d;
+    }
+
+    d++;
+    n--;
+  }
+}
+
 unsigned char *find_device(unsigned char *d, size_t n, uint16_t DeviceId) {
   char needle[6];
   sprintf(needle, "\n\t%04x", DeviceId);
   return memmem(d, n, needle, sizeof(needle));
 }
-
 
 char *lookup_name_from_mmap(unsigned char *d, size_t sz,
                             /*optional struct*/ char *buf, int size,
@@ -51,6 +75,7 @@ char *lookup_name_from_mmap(unsigned char *d, size_t sz,
   if (!found) {
     return "<can't find vendor id>";
   }
+  assert(found == find_any_vendor(found, sz));
 
   if (verbose) {
     printf("Scan from %p, found at %p\n", d, found);
@@ -64,10 +89,15 @@ char *lookup_name_from_mmap(unsigned char *d, size_t sz,
     printf("Found vendor after %zu bytes, leaving %zu\n", moved, sz);
   }
 
-  found = find_device(d, sz, DeviceId);
+  const unsigned char *next = find_any_vendor(found + 1, sz - 1);
+  if (!next) {
+    next = e;
+  }
+
+  found = find_device(d, next - found, DeviceId);
   if (!found) {
-    snprintf(buf, size-1, "Device %04x", DeviceId);
-    buf[size-1] = 0;
+    snprintf(buf, size - 1, "Device %04x", DeviceId);
+    buf[size - 1] = 0;
     return buf;
   }
 
@@ -147,10 +177,9 @@ MAIN_MODULE() {
       char *ref = reference(rbuffer, size, VendorId, DeviceId);
       char *par = lookup_name(pbuffer, size, VendorId, DeviceId);
 
-      if (!consistent(ref, par))
-        {
-          printf("%s != %s\n", ref, par);      
-        }
+      if (!consistent(ref, par)) {
+        printf("%s != %s\n", ref, par);
+      }
       CHECK(consistent(ref, par));
     }
   }
