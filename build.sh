@@ -8,4 +8,4 @@ $CC $CFLAG main.c -c -o main.o
 
 $CC main.o reference.o -o main -lpci
 
-./main
+time ./main
