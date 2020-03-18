@@ -44,7 +44,7 @@ unsigned char *find_any_vendor(unsigned char *d, size_t n) {
     }
 
     // todo: it's a vendor if the line starts with a (four?) hex digit
-    if (d[1] != '\t') {
+    if (isxdigit(d[1])) {
       return d;
     }
 
@@ -54,18 +54,21 @@ unsigned char *find_any_vendor(unsigned char *d, size_t n) {
 }
 
 unsigned char *find_device(unsigned char *d, size_t n, uint16_t DeviceId) {
-  char needle[6];
+  char needle[6] = {0};
   sprintf(needle, "\n\t%04x", DeviceId);
   return memmem(d, n, needle, sizeof(needle));
 }
 
 char *lookup_name_from_mmap(unsigned char *d, size_t sz,
                             /*optional struct*/ char *buf, int size,
-                            /* skip flags */ uint16_t VendorId,
-                            uint16_t DeviceId) {
+                            /* skip flags */ const uint16_t VendorId,
+                            const uint16_t DeviceId) {
 
   const bool verbose = false;
 
+  if (verbose) {
+    printf("Look up %x/%x\n", VendorId, DeviceId);
+  }
   const unsigned char *e = d + sz;
   if (verbose) {
     printf("File size %zu\n", sz);
@@ -91,10 +94,17 @@ char *lookup_name_from_mmap(unsigned char *d, size_t sz,
 
   const unsigned char *next = find_any_vendor(found + 1, sz - 1);
   if (!next) {
+    printf("find_any_failed, using end\n");
     next = e;
   }
 
+  if (verbose) {
+    printf("looking for device between %p and %p\n", found, next);
+    printf("%.*s\n", (int)(10 + next - found), found);
+  }
+
   found = find_device(d, next - found, DeviceId);
+
   if (!found) {
     snprintf(buf, size - 1, "Device %04x", DeviceId);
     buf[size - 1] = 0;
@@ -115,7 +125,7 @@ char *lookup_name_from_mmap(unsigned char *d, size_t sz,
   }
 
   size_t str = newline - found;
-  size_t to_copy = str < (size - 1) ? str : (size - 1);
+  size_t to_copy = (int)str < (size - 1) ? str : (size - 1);
 
   // hazard, don't copy beyond the file
   memcpy(buf, found, to_copy);
@@ -167,18 +177,19 @@ MAIN_MODULE() {
     char pbuffer[sizeof(rbuffer)] = {0};
     int size = sizeof(rbuffer);
 
-    uint16_t VegaDeviceId = 26287;
-
+    // uint16_t VegaDeviceId = 26287;
     uint16_t VendorId = 4098;
-    uint64_t off = 50;
-    for (uint16_t DeviceId = VegaDeviceId - off; DeviceId < VegaDeviceId + off;
+    
+    for (uint16_t DeviceId = 0; DeviceId < UINT16_MAX;
          DeviceId++) {
 
       char *ref = reference(rbuffer, size, VendorId, DeviceId);
       char *par = lookup_name(pbuffer, size, VendorId, DeviceId);
 
       if (!consistent(ref, par)) {
-        printf("%s != %s\n", ref, par);
+        printf("%%devid %u\n", DeviceId);
+        printf("%s ?= %s\n", ref, par);
+        break;
       }
       CHECK(consistent(ref, par));
     }
