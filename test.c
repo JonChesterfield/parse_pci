@@ -11,72 +11,88 @@
 
 #if GLOBAL_CTOR
 struct pci_access *pacc;
-__attribute__((constructor)) static void init(void) {
-  pacc = pci_alloc();
-  pci_init(pacc);
+__attribute__((constructor)) static void init(void)
+{
+	pacc = pci_alloc();
+	pci_init(pacc);
 }
-__attribute__((destructor)) static void dtor(void) { pci_cleanup(pacc); }
+__attribute__((destructor)) static void dtor(void)
+{
+	pci_cleanup(pacc);
+}
 #endif
 
-char *reference(char *namebuf, int size, uint16_t VendorId, uint16_t DeviceId) {
+char *reference(char *namebuf, int size, uint16_t VendorId, uint16_t DeviceId)
+{
 #if !GLOBAL_CTOR
-  struct pci_access *pacc;
-  pacc = pci_alloc();
-  pci_init(pacc);
+	struct pci_access *pacc;
+	pacc = pci_alloc();
+	pci_init(pacc);
 #endif
-  char *name = pci_lookup_name(pacc, namebuf, size, PCI_LOOKUP_DEVICE, VendorId,
-                               DeviceId);
+	char *name = pci_lookup_name(pacc, namebuf, size, PCI_LOOKUP_DEVICE,
+				     VendorId, DeviceId);
 
 #if !GLOBAL_CTOR
-  pci_cleanup(pacc);
+	pci_cleanup(pacc);
 #endif
-  return name;
+	return name;
 }
 
-static bool consistent(char *ref, char *prop) {
-  if (ref && prop) {
-    return strcmp(ref, prop) == 0;
-  } else {
-    return false;
-  }
+static bool consistent(char *ref, char *prop)
+{
+	if (ref && prop) {
+		return strcmp(ref, prop) == 0;
+	} else {
+		return false;
+	}
 }
 
-MAIN_MODULE() {
+MAIN_MODULE()
+{
+	TEST("external")
+	{
+		struct pci_ids file = pci_ids_create();
+		CHECK(file.fd != -1);
+		if (file.fd != -1) {
+			char rbuffer[128] = { 0 };
+			char pbuffer[sizeof(rbuffer)] = { 0 };
+			size_t size = sizeof(rbuffer);
 
-  TEST("external") {
-    struct pci_ids file = pci_ids_create();
-    CHECK(file.fd != -1);
-    if (file.fd != -1) {
-      char rbuffer[128] = {0};
-      char pbuffer[sizeof(rbuffer)] = {0};
-      size_t size = sizeof(rbuffer);
+			uint16_t VegaDeviceId = 26287;
+			uint16_t AMDVendorId = 4098;
+			(void)VegaDeviceId;
+			(void)AMDVendorId;
 
-      uint16_t VegaDeviceId = 26287;
-      uint16_t AMDVendorId = 4098;
-      (void)VegaDeviceId;
-      (void)AMDVendorId;
+			for (uint32_t VendorId = 0; VendorId <= UINT16_MAX;
+			     VendorId++) {
+				printf("Check vendor %u (0x%04x)\n", VendorId,
+				       VendorId);
 
-      for (uint32_t VendorId = 0; VendorId <= UINT16_MAX; VendorId++) {
+				for (uint32_t DeviceId = 0;
+				     DeviceId <= UINT16_MAX; DeviceId++) {
+					char *par =
+						pci_ids_lookup(file, pbuffer,
+							       size, VendorId,
+							       DeviceId);
+					// hit the exact cache
+					par = pci_ids_lookup(file, pbuffer,
+							     size, VendorId,
+							     DeviceId);
 
-        printf("Check vendor %u (0x%04x)\n", VendorId, VendorId);
+					char *ref =
+						reference(rbuffer, size,
+							  VendorId, DeviceId);
 
-        for (uint32_t DeviceId = 0; DeviceId <= UINT16_MAX; DeviceId++) {
+					if (!consistent(ref, par)) {
+						printf("ven/dev %u/%u: ",
+						       VendorId, DeviceId);
+						printf("%s ?= %s\n", ref, par);
+					}
 
-          char *par = pci_ids_lookup(file, pbuffer, size, VendorId, DeviceId);
-          // hit the exact cache
-          par = pci_ids_lookup(file, pbuffer, size, VendorId, DeviceId);
-
-          char *ref = reference(rbuffer, size, VendorId, DeviceId);
-
-          if (!consistent(ref, par)) {
-            printf("ven/dev %u/%u: ", VendorId, DeviceId);
-            printf("%s ?= %s\n", ref, par);
-          }
-
-          CHECK(consistent(ref, par));
-        }
-      }
-    }
-    pci_ids_destroy(file);
-  }
+					CHECK(consistent(ref, par));
+				}
+			}
+		}
+		pci_ids_destroy(file);
+	}
 }

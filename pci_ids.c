@@ -68,195 +68,207 @@
 #include <stdio.h>
 
 static const char *pci_ids_paths[] = {
-    "/usr/share/hwdata/pci.ids", // update-pciids
-    "/usr/share/misc/pci.ids",   // debian
-    "/usr/share/pci.ids",        // redhat
-    "/var/lib/pciutils/pci.ids", // also debian
-    "pci.ids",
+	"/usr/share/hwdata/pci.ids", // update-pciids
+	"/usr/share/misc/pci.ids", // debian
+	"/usr/share/pci.ids", // redhat
+	"/var/lib/pciutils/pci.ids", // also debian
+	"pci.ids",
 };
 
-static struct pci_ids pci_ids_create_from_file(const char *path) {
-  struct pci_ids failure = {
-      .fd = -1,
-  };
+static struct pci_ids pci_ids_create_from_file(const char *path)
+{
+	struct pci_ids failure = {
+		.fd = -1,
+	};
 
-  int fd = open(path, O_RDONLY, 0);
-  if (fd == -1) {
-    return failure;
-  }
+	int fd = open(path, O_RDONLY, 0);
+	if (fd == -1) {
+		return failure;
+	}
 
-  struct stat sb;
-  fstat(fd, &sb);
-  size_t sz = sb.st_size;
+	struct stat sb;
+	fstat(fd, &sb);
+	size_t sz = sb.st_size;
 
-  if (sz == 0) {
-    close(fd);
-    return failure;
-  }
+	if (sz == 0) {
+		close(fd);
+		return failure;
+	}
 
-  sz = (sz < UINT32_MAX) ? sz : UINT32_MAX;
-  void *addr = mmap(0, sz, PROT_READ, MAP_PRIVATE, fd, 0);
+	sz = (sz < UINT32_MAX) ? sz : UINT32_MAX;
+	void *addr = mmap(0, sz, PROT_READ, MAP_PRIVATE, fd, 0);
 
-  if (addr == MAP_FAILED) {
-    close(fd);
-    return failure;
-  }
+	if (addr == MAP_FAILED) {
+		close(fd);
+		return failure;
+	}
 
-  return (struct pci_ids){
-      .fd = fd,
-      .addr = addr,
-      .size = sz,
-  };
+	return (struct pci_ids){
+		.fd = fd,
+		.addr = addr,
+		.size = sz,
+	};
 }
 
-struct pci_ids pci_ids_create(void) {
-  size_t sz = sizeof(pci_ids_paths) / sizeof(pci_ids_paths[0]);
-  for (size_t i = 0; i < sz; i++) {
-    struct pci_ids res = pci_ids_create_from_file(pci_ids_paths[i]);
-    if (res.fd != -1) {
-      return res;
-    }
-  }
+struct pci_ids pci_ids_create(void)
+{
+	size_t sz = sizeof(pci_ids_paths) / sizeof(pci_ids_paths[0]);
+	for (size_t i = 0; i < sz; i++) {
+		struct pci_ids res = pci_ids_create_from_file(pci_ids_paths[i]);
+		if (res.fd != -1) {
+			return res;
+		}
+	}
 
-  return (struct pci_ids){.fd = -1};
+	return (struct pci_ids){ .fd = -1 };
 }
 
-void pci_ids_destroy(struct pci_ids f) {
-  if (f.fd != -1) {
-    munmap(f.addr, f.size);
-    close(f.fd);
-  }
+void pci_ids_destroy(struct pci_ids f)
+{
+	if (f.fd != -1) {
+		munmap(f.addr, f.size);
+		close(f.fd);
+	}
 }
 
 struct range {
-  // Iterator pair, start <= end. Can dereference [start end)
-  unsigned char *start;
-  unsigned char *end;
+	// Iterator pair, start <= end. Can dereference [start end)
+	unsigned char *start;
+	unsigned char *end;
 };
-static bool empty_range(struct range r) { return r.start == r.end; }
+static bool empty_range(struct range r)
+{
+	return r.start == r.end;
+}
 
-static void write_as_hex(uint16_t x, char *b) {
-  const char digits[] = "0123456789abcdef";
-  for (unsigned i = 0; i < 4; i++) {
-    unsigned index = 0xf & (x >> 4 * (3 - i));
-    b[i] = digits[index];
-  }
+static void write_as_hex(uint16_t x, char *b)
+{
+	const char digits[] = "0123456789abcdef";
+	for (unsigned i = 0; i < 4; i++) {
+		unsigned index = 0xf & (x >> 4 * (3 - i));
+		b[i] = digits[index];
+	}
 }
 
 static struct range find_vendor(struct range r, uint16_t VendorId)
 
 {
-  if (empty_range(r)) {
-    return r;
-  }
+	if (empty_range(r)) {
+		return r;
+	}
 
-  char needle[5] = "\n0000";
-  write_as_hex(VendorId, &needle[1]);
-  unsigned char *s = memmem(r.start, r.end - r.start, needle, sizeof(needle));
+	char needle[5] = "\n0000";
+	write_as_hex(VendorId, &needle[1]);
+	unsigned char *s =
+		memmem(r.start, r.end - r.start, needle, sizeof(needle));
 
-  if (s) {
-    r.start = s;
-  } else {
-    r.start = r.end;
-    assert(empty_range(r));
-  }
-  return r;
+	if (s) {
+		r.start = s;
+	} else {
+		r.start = r.end;
+		assert(empty_range(r));
+	}
+	return r;
 }
 
-struct range trim_whitespace(struct range r) {
-  while (!empty_range(r) && isspace(r.start[0])) {
-    r.start++;
-  }
-  while (!empty_range(r) && isspace(r.end[-1])) {
-    r.end--;
-  }
-  return r;
+struct range trim_whitespace(struct range r)
+{
+	while (!empty_range(r) && isspace(r.start[0])) {
+		r.start++;
+	}
+	while (!empty_range(r) && isspace(r.end[-1])) {
+		r.end--;
+	}
+	return r;
 }
 
-struct range skip_vendor_id(struct range r) {
-  struct range failure = {0, 0};
+struct range skip_vendor_id(struct range r)
+{
+	struct range failure = { 0, 0 };
 
-  // Skip newline
-  assert(r.start[0] == '\n');
-  r.start++;
-  if (empty_range(r)) {
-    return failure;
-  }
+	// Skip newline
+	assert(r.start[0] == '\n');
+	r.start++;
+	if (empty_range(r)) {
+		return failure;
+	}
 
-  // Skip rest of line
-  r.start = memchr(r.start, '\n', r.end - r.start);
-  if (!r.start) {
-    return failure;
-  }
+	// Skip rest of line
+	r.start = memchr(r.start, '\n', r.end - r.start);
+	if (!r.start) {
+		return failure;
+	}
 
-  return r;
+	return r;
 }
 
-static struct range find_device(struct range r, uint16_t DeviceId) {
-  struct range failure = {0, 0};
+static struct range find_device(struct range r, uint16_t DeviceId)
+{
+	struct range failure = { 0, 0 };
 
-  if (empty_range(r)) {
-    return failure;
-  }
+	if (empty_range(r)) {
+		return failure;
+	}
 
-  assert(r.start[0] == '\n');
-  r = skip_vendor_id(r);
-  if (empty_range(r)) {
-    return failure;
-  }
-  assert(r.start[0] == '\n');
+	assert(r.start[0] == '\n');
+	r = skip_vendor_id(r);
+	if (empty_range(r)) {
+		return failure;
+	}
+	assert(r.start[0] == '\n');
 
-  char needle[6] = "\n\t0000";
-  write_as_hex(DeviceId, &needle[2]);
+	char needle[6] = "\n\t0000";
+	write_as_hex(DeviceId, &needle[2]);
 
-  for (;;) {
-    size_t width = r.end - r.start;
+	for (;;) {
+		size_t width = r.end - r.start;
 
-    if (width < 6) {
-      return failure;
-    }
+		if (width < sizeof(needle)) {
+			return failure;
+		}
 
-    unsigned char *line_end = memchr(r.start + 1, '\n', width - 1);
-    if (!line_end) {
-      // File may not end with a newline
-      line_end = r.end;
-    }
+		unsigned char *line_end = memchr(r.start + 1, '\n', width - 1);
+		if (!line_end) {
+			// File may not end with a newline
+			line_end = r.end;
+		}
 
-    if (memcmp(r.start, needle, sizeof(needle)) == 0) {
-      // Success
-      r.start += sizeof(needle);
-      r.end = line_end;
-      return trim_whitespace(r);
-    }
+		if (memcmp(r.start, needle, sizeof(needle)) == 0) {
+			// Success
+			r.start += sizeof(needle);
+			r.end = line_end;
+			return trim_whitespace(r);
+		}
 
-    if (isxdigit(r.start[1])) {
-      // Reached the end of this region
-      return failure;
-    }
+		if (isxdigit(r.start[1])) {
+			// Reached the end of this region
+			return failure;
+		}
 
-    // Otherwise ignore whatever is on the line, e.g. '#'
-    r.start = line_end;
-  }
+		// Otherwise ignore whatever is on the line, e.g. '#'
+		r.start = line_end;
+	}
 }
 
-static void copy_range_to_buffer(struct range r, char *buf, size_t size) {
-  assert(!empty_range(r));
-  size_t to_copy = (r.end - r.start);
-  to_copy = to_copy < (size - 1) ? to_copy : size - 1;
+static void copy_range_to_buffer(struct range r, char *buf, size_t size)
+{
+	assert(!empty_range(r));
+	size_t to_copy = (r.end - r.start);
+	to_copy = to_copy < (size - 1) ? to_copy : size - 1;
 
-  memcpy(buf, r.start, to_copy);
-  buf[to_copy] = '\0';
+	memcpy(buf, r.start, to_copy);
+	buf[to_copy] = '\0';
 }
 
-static void write_fallback_to_buffer(char *buf, size_t size,
-                                     uint16_t DeviceId) {
-  char tmp[] = "Device xxxx";
-  static_assert(sizeof(tmp) == 12, "");
-  write_as_hex(DeviceId, &tmp[7]);
+static void write_fallback_to_buffer(char *buf, size_t size, uint16_t DeviceId)
+{
+	char tmp[] = "Device xxxx";
+	static_assert(sizeof(tmp) == 12, "");
+	write_as_hex(DeviceId, &tmp[7]);
 
-  size_t to_copy = (sizeof(tmp) <= size) ? sizeof(tmp) : size;
-  memcpy(buf, tmp, to_copy);
-  buf[size - 1] = '\0';
+	size_t to_copy = (sizeof(tmp) <= size) ? sizeof(tmp) : size;
+	memcpy(buf, tmp, to_copy);
+	buf[size - 1] = '\0';
 }
 
 #define CACHE 1
@@ -268,111 +280,112 @@ static void write_fallback_to_buffer(char *buf, size_t size,
 #endif
 
 char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
-                     uint16_t VendorId, uint16_t DeviceId) {
+		     uint16_t VendorId, uint16_t DeviceId)
+{
+	// Probably want a mutex, but don't want to hold it for the whole routine
+	static struct cache {
+		uint16_t VendorId;
+		uint16_t DeviceId;
+		uint32_t VendorOffset; // ~0 if vendor not found
+		char res[HSA_PUBLIC_NAME_SIZE]; // res[0] == '\0' if unavailable
+	} instance = { UINT16_MAX, UINT16_MAX, UINT32_MAX, { 0 } };
 
-  // Probably want a mutex, but don't want to hold it for the whole routine
-  static struct cache {
-    uint16_t VendorId;
-    uint16_t DeviceId;
-    uint32_t VendorOffset;          // ~0 if vendor not found
-    char res[HSA_PUBLIC_NAME_SIZE]; // res[0] == '\0' if unavailable
-  } instance = {UINT16_MAX, UINT16_MAX, UINT32_MAX, {0}};
+	if (f.fd == -1) {
+		write_fallback_to_buffer(buf, size, DeviceId);
+		return buf;
+	}
 
-  if (f.fd == -1) {
-    write_fallback_to_buffer(buf, size, DeviceId);
-    return buf;
-  }
+	if (instance.VendorId == VendorId) {
+		if (instance.VendorOffset == UINT32_MAX) {
+			write_fallback_to_buffer(buf, size, DeviceId);
+			return buf;
+		}
+		if (instance.DeviceId == DeviceId && instance.res[0] != '\0') {
+			size_t len = strlen(instance.res);
+			if (len < size) {
+				memcpy(buf, instance.res, len + 1);
+				assert(buf[len] == '\0');
+				return buf;
+			}
+		}
+	}
 
-  if (instance.VendorId == VendorId) {
-    if (instance.VendorOffset == UINT32_MAX) {
-      write_fallback_to_buffer(buf, size, DeviceId);
-      return buf;
-    }
-    if (instance.DeviceId == DeviceId && instance.res[0] != '\0') {
-      size_t len = strlen(instance.res);
-      if (len < size) {
-        memcpy(buf, instance.res, len + 1);
-        assert(buf[len] == '\0');
-        return buf;
-      }
-    }
-  }
+	struct range whole_file = {
+		.start = f.addr,
+		.end = f.addr + f.size,
+	};
 
-  struct range whole_file = {
-      .start = f.addr,
-      .end = f.addr + f.size,
-  };
+	struct range vendor = { 0, 0 };
 
-  struct range vendor = {0, 0};
+	if (instance.VendorId == VendorId) {
+		// Attempt to populate the vendor location from cache
+		uint32_t off = instance.VendorOffset;
+		char needle[5] = "\n0000";
+		if ((off + sizeof(needle)) < f.size) {
+			unsigned char *guess = f.addr + off;
+			write_as_hex(VendorId, &needle[1]);
+			if (memcmp(guess, needle, sizeof(needle)) == 0) {
+				vendor.start = guess;
+				vendor.end = whole_file.end;
+			}
+		}
+	}
 
-  if (instance.VendorId == VendorId) {
-    // Attempt to populate the vendor location from cache
-    uint32_t off = instance.VendorOffset;
-    char needle[5] = "\n0000";
-    if ((off + sizeof(needle)) < f.size) {
-      unsigned char *guess = f.addr + off;
-      write_as_hex(VendorId, &needle[1]);
-      if (memcmp(guess, needle, sizeof(needle)) == 0) {
-        vendor.start = guess;
-        vendor.end = whole_file.end;
-      }
-    }
-  }
+	if (empty_range(vendor)) {
+		vendor = find_vendor(whole_file, VendorId);
+	}
 
-  if (empty_range(vendor)) {
-    vendor = find_vendor(whole_file, VendorId);
-  }
+	struct range device = find_device(vendor, DeviceId);
 
-  struct range device = find_device(vendor, DeviceId);
+	if (!empty_range(device)) {
+		copy_range_to_buffer(device, buf, size);
+	} else {
+		write_fallback_to_buffer(buf, size, DeviceId);
+	}
 
-  if (!empty_range(device)) {
-    copy_range_to_buffer(device, buf, size);
-  } else {
-    write_fallback_to_buffer(buf, size, DeviceId);
-  }
+	instance.VendorId = VendorId;
+	instance.DeviceId = DeviceId;
+	instance.VendorOffset = empty_range(vendor) ?
+					UINT32_MAX :
+					vendor.start - whole_file.start;
 
-  instance.VendorId = VendorId;
-  instance.DeviceId = DeviceId;
-  instance.VendorOffset =
-      empty_range(vendor) ? UINT32_MAX : vendor.start - whole_file.start;
+	size_t used = strlen(buf) + 1;
+	if (used < sizeof(instance.res)) {
+		memcpy(instance.res, buf, used);
+		assert(instance.res[used - 1] == '\0');
+	} else {
+		instance.res[0] = '\0';
+	}
 
-  size_t used = strlen(buf) + 1;
-  if (used < sizeof(instance.res)) {
-    memcpy(instance.res, buf, used);
-    assert(instance.res[used - 1] == '\0');
-  } else {
-    instance.res[0] = '\0';
-  }
-
-  return buf;
+	return buf;
 }
 
 #else
 
 char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
-                     uint16_t VendorId, uint16_t DeviceId) {
+		     uint16_t VendorId, uint16_t DeviceId)
+{
+	if (f.fd == -1) {
+		write_fallback_to_buffer(buf, size, DeviceId);
+		return buf;
+	}
 
-  if (f.fd == -1) {
-    write_fallback_to_buffer(buf, size, DeviceId);
-    return buf;
-  }
+	struct range whole_file = {
+		.start = f.addr,
+		.end = (unsigned char *)f.addr + f.size,
+	};
 
-  struct range whole_file = {
-      .start = f.addr,
-      .end = (unsigned char *)f.addr + f.size,
-  };
+	struct range vendor = find_vendor(whole_file, VendorId);
 
-  struct range vendor = find_vendor(whole_file, VendorId);
+	struct range device = find_device(vendor, DeviceId);
 
-  struct range device = find_device(vendor, DeviceId);
+	if (!empty_range(device)) {
+		copy_range_to_buffer(device, buf, size);
+	} else {
+		write_fallback_to_buffer(buf, size, DeviceId);
+	}
 
-  if (!empty_range(device)) {
-    copy_range_to_buffer(device, buf, size);
-  } else {
-    write_fallback_to_buffer(buf, size, DeviceId);
-  }
-
-  return buf;
+	return buf;
 }
 
 #endif

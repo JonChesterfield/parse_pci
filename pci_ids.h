@@ -30,9 +30,9 @@
 #include <stdint.h>
 
 struct pci_ids {
-  int32_t fd; // -1 if file access failed
-  uint32_t size;
-  void *addr;
+	int32_t fd; // -1 if file access failed
+	uint32_t size;
+	void *addr;
 };
 
 // Sixteen byte struct is passed in registers. Avoids calling malloc/free.
@@ -41,6 +41,6 @@ void pci_ids_destroy(struct pci_ids);
 
 // Writes to buf. Returns buf. Does not fail.
 char *pci_ids_lookup(struct pci_ids, char *buf, size_t buf_size,
-                     uint16_t VendorId, uint16_t DeviceId);
+		     uint16_t VendorId, uint16_t DeviceId);
 
 #endif
