@@ -71,7 +71,62 @@ range_t find_vendor_range(unsigned char *d, size_t n, uint16_t VendorId) {
   return (range_t){.start = NULL};
 }
 
+range_t find_vendor_2(range_t r, uint16_t VendorId)
+
+{
+  char needle[5];
+  sprintf(needle, "\n%04X", VendorId);
+  unsigned char *s = memmem(r.start, r.end - r.start, needle, sizeof(needle));
+  if (!s) {
+    r.start = r.end;
+  } else {
+    r.start = s;
+  }
+  return r;
+}
+
+range_t find_device_2(range_t r, uint16_t DeviceId) {
+  assert(r.start != r.end);
+  assert(r.start[0] == '\n');
+
+  // Move to start of line
+  r.start++;
+
+  char needle[5] = {0};
+  sprintf(needle, "\t%04x", DeviceId);
+
+  size_t width = r.end - r.start;
+  if (width < 6) {
+    goto fail;
+  }
+
+  unsigned char *end = memchr(r.start + 1, '\n', width - 1);
+  if (!end) {
+    end = r.end;
+  }
+
+  if (memcmp(r.start, needle, 5) == 0) {
+    // matched. Narrow the range to the printed result
+    r.start += 5;
+    r.end = end;
+    // trim whitespace from both ends
+
+    return r;
+  }
+
+  if (isxdigit(r.start[0])) {
+    // Reached the end of this region
+    goto fail;
+  }
+
+  // Otherwise ignore whatever is on the line, e.g. '#'
+
+fail:
+  return (range_t){0, 0};
+}
+
 unsigned char *find_device(unsigned char *d, size_t n, uint16_t DeviceId) {
+  // This can handle comments etc
   char needle[6] = {0};
   sprintf(needle, "\n\t%04x", DeviceId);
   return memmem(d, n, needle, sizeof(needle));
@@ -142,39 +197,45 @@ char *lookup_name_from_mmap(unsigned char *d, size_t sz,
 
 typedef struct {
   int fd;
+  unsigned size;
   void *addr;
-  size_t size;
 } mmapped_file_t;
 
+static_assert(sizeof(mmapped_file_t) == 16, "");
 mmapped_file_t open_mmapped_file(void) {
 
   const char *path = "pci.ids";
-  mmapped_file_t res = {
+  mmapped_file_t failure = {
       .fd = -1,
   };
 
   int fd = open(path, O_RDONLY, 0);
   if (fd == -1) {
-    return res;
+    return failure;
   }
 
   struct stat sb;
   fstat(fd, &sb);
   size_t sz = sb.st_size;
 
+  if (sz == 0) {
+    close(fd);
+    return failure;
+  }
   // No attempt to read files > 4gb in size
   sz = (sz < UINT32_MAX) ? sz : UINT32_MAX;
-  void *vd = mmap(0, sz, PROT_READ, MAP_PRIVATE, fd, 0);
+  void *addr = mmap(0, sz, PROT_READ, MAP_PRIVATE, fd, 0);
 
-  if (vd == MAP_FAILED) {
+  if (addr == MAP_FAILED) {
     close(fd);
-    return res;
+    return failure;
   }
 
-  res.fd = fd;
-  res.addr = vd;
-  res.size = sz;
-  return res;
+  return (mmapped_file_t){
+      .fd = fd,
+      .addr = addr,
+      .size = sz,
+  };
 }
 
 void close_mmapped_file(mmapped_file_t f) {
@@ -184,13 +245,19 @@ void close_mmapped_file(mmapped_file_t f) {
   }
 }
 
-char *lookup_name(/*optional struct*/ char *buf, int size,
-                  /* skip flags */ uint16_t VendorId, uint16_t DeviceId) {
+char *lookup_name(char *buf, int size, uint16_t VendorId, uint16_t DeviceId) {
   // Writes into buf, format needs to be consistent
   // Usually returns buf, sometimes returns a pointer into a string literal
 
   mmapped_file_t f = open_mmapped_file();
 
+  if (f.fd != -1) {
+    range_t whole_file = {
+        .start = f.addr,
+        .end = f.addr + f.size,
+    };
+    (void)whole_file;
+  }
   // Wrong failure mode
   if (f.fd != -1) {
     return "<file i/o failed>";
@@ -215,75 +282,7 @@ static bool consistent(char *ref, char *prop) {
 
 MAIN_MODULE() {
 
-  const bool disable_implementation = false;
-  const bool disable_reference = false;
-
-  const bool skip_unknown_vendors = false;
-
-  TEST("linear") {
-    return;
-    mmapped_file_t file = open_mmapped_file();
-    CHECK(file.fd != -1);
-    if (file.fd != -1) {
-      char rbuffer[128] = {0};
-      char pbuffer[sizeof(rbuffer)] = {0};
-      int size = sizeof(rbuffer);
-
-      uint16_t VegaDeviceId = 26287;
-      uint16_t AMDVendorId = 4098;
-      (void)VegaDeviceId;
-      (void)AMDVendorId;
-
-      for (uint32_t VendorId = 0; VendorId < UINT16_MAX; VendorId++) {
-
-        if (0) {
-          if (VendorId < AMDVendorId - 100)
-            continue;
-          if (VendorId > AMDVendorId + 100)
-            continue;
-        }
-
-        printf("Vendor %u\n", VendorId);
-        for (uint32_t DeviceId = 0; DeviceId < UINT16_MAX; DeviceId++) {
-          if (DeviceId % 100 == 0) {
-            // printf("check %u\n", DeviceId);
-          }
-
-          // DeviceId = 26672;
-
-          char *ref = disable_reference
-                          ? NULL
-                          : reference(rbuffer, size, VendorId, DeviceId);
-
-          bool no_vendor = false;
-          char *par =
-              disable_implementation
-                  ? NULL
-                  : lookup_name_from_mmap(file.addr, file.size, pbuffer, size,
-                                          VendorId, DeviceId, &no_vendor);
-
-          if (disable_implementation || disable_reference) {
-            continue;
-          }
-
-          if (!consistent(ref, par)) {
-            printf("ven/dev %u/%u: ", VendorId, DeviceId);
-            printf("%s ?= %s\n", ref, par);
-          }
-
-          CHECK(consistent(ref, par));
-
-          if (skip_unknown_vendors && no_vendor) {
-            // printf("Can't find vendor %x, skipping devices\n", VendorId);
-            break;
-          }
-        }
-      }
-    }
-    close_mmapped_file(file);
-  }
-
-  TEST("faster") {
+  TEST("") {
     mmapped_file_t file = open_mmapped_file();
     CHECK(file.fd != -1);
     if (file.fd != -1) {
