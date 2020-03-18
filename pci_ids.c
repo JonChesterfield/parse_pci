@@ -54,30 +54,27 @@
 #define _GNU_SOURCE
 #include <string.h>
 
-
 #include "pci_ids.h"
 
 #include <assert.h>
 #include <ctype.h>
-#include <stdbool.h>
-#include <unistd.h>
-#include <sys/mman.h>
 #include <fcntl.h>
+#include <stdbool.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
+// #include "EvilUnit.h"
+// #include "parse.h"
 
-#include "EvilUnit.h"
-#include "parse.h"
-
-
-  static const char *pci_ids_paths[] = {
-      "/usr/share/hwdata/pci.ids", // update-pciids
-      "/usr/share/misc/pci.ids",   // debian
-      "/usr/share/pci.ids",        // redhat
-      "/var/lib/pciutils/pci.ids", // also debian
-      "pci.ids",
-  };
+static const char *pci_ids_paths[] = {
+    "/usr/share/hwdata/pci.ids", // update-pciids
+    "/usr/share/misc/pci.ids",   // debian
+    "/usr/share/pci.ids",        // redhat
+    "/var/lib/pciutils/pci.ids", // also debian
+    "pci.ids",
+};
 
 static struct pci_ids pci_ids_create_from_file(const char *path) {
   struct pci_ids failure = {
@@ -97,7 +94,7 @@ static struct pci_ids pci_ids_create_from_file(const char *path) {
     close(fd);
     return failure;
   }
-  
+
   sz = (sz < UINT32_MAX) ? sz : UINT32_MAX;
   void *addr = mmap(0, sz, PROT_READ, MAP_PRIVATE, fd, 0);
 
@@ -250,21 +247,38 @@ write_fallback_to_buffer(char *buf, size_t size, uint16_t DeviceId) {
   buf[size - 1] = '\0';
 }
 
-static void fill_buffer_from_device_range(char *buf, size_t size,
-                                          struct range r, uint16_t DeviceId) {
-  if (empty_range(r)) {
-    write_fallback_to_buffer(buf, size, DeviceId);
 
-  } else {
-    copy_range_to_buffer(r, buf, size);
-  }
-}
+#ifndef HSA_PUBLIC_NAME_SIZE
+#define HSA_PUBLIC_NAME_SIZE 64
+#endif
 
-char * pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
+static struct cache {
+  // mutex?
+  uint16_t VendorId;
+  uint16_t DeviceId;
+  uint32_t VendorOffset;          // ~0 if vendor not found
+  char res[HSA_PUBLIC_NAME_SIZE]; // res[0] == '\0' if unavailable
+} instance = {UINT16_MAX, UINT16_MAX, UINT32_MAX, {0}};
+
+char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
                      uint16_t VendorId, uint16_t DeviceId) {
   if (f.fd == -1) {
     write_fallback_to_buffer(buf, size, DeviceId);
     return buf;
+  }
+
+  if (instance.VendorId == VendorId) {
+    if (instance.VendorOffset == UINT32_MAX) {
+      write_fallback_to_buffer(buf, size, DeviceId);
+      return buf;
+    }
+    if (instance.DeviceId == DeviceId && instance.res[0] != '\0') {
+      if (size <= HSA_PUBLIC_NAME_SIZE) {
+        memcpy(buf, instance.res, size);
+        buf[size - 1] = '\0';
+        return buf;
+      }
+    }
   }
 
   struct range whole_file = {
@@ -272,7 +286,25 @@ char * pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
       .end = f.addr + f.size,
   };
 
-  struct range vendor = find_vendor(whole_file, VendorId);
+  struct range vendor = {0, 0};
+
+  if (instance.VendorId == VendorId) {
+    // Attempt to populate the vendor location from cache
+    uint32_t off = instance.VendorOffset;
+    char needle[5] = "\n0000";
+    if ((off + sizeof(needle)) < f.size) {
+      unsigned char *guess = f.addr + off;
+      write_as_hex(VendorId, &needle[1]);
+      if (memcmp(guess, needle, sizeof(needle)) == 0) {
+        vendor.start = guess;
+        vendor.end = whole_file.end;
+      }
+    }
+  }
+
+  if (empty_range(vendor)) {
+    vendor = find_vendor(whole_file, VendorId);
+  }
 
   struct range device = find_device(vendor, DeviceId);
 
@@ -282,115 +314,17 @@ char * pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
     write_fallback_to_buffer(buf, size, DeviceId);
   }
 
-  return buf;
-}
+  instance.VendorId = VendorId;
+  instance.DeviceId = DeviceId;
+  instance.VendorOffset =
+      empty_range(vendor) ? UINT32_MAX : vendor.start - whole_file.start;
 
-static bool consistent(char *ref, char *prop) {
-  if (ref && prop) {
-    return strcmp(ref, prop) == 0;
+  if (size <= sizeof(instance.res)) {
+    memcpy(instance.res, buf, size);
+    assert(instance.res[size - 1] == '\0');
   } else {
-    return false;
+    instance.res[0] = '\0';
   }
-}
 
-static MODULE(write_as_four_hex) {
-  TEST("vs sprintf") {
-    char ref[5];
-    char val[4];
-    for (uint32_t i = 0; i < UINT16_MAX; i++) {
-      write_as_hex(i, val);
-      CHECK(4 == snprintf(ref, 5, "%04x", i));
-      CHECK(memcmp(ref, val, 4) == 0);
-    }
-  }
-}
-
-MAIN_MODULE() {
-  DEPENDS(write_as_four_hex);
-
-  TEST("external")
-    {
-    struct pci_ids file = pci_ids_create();
-    CHECK(file.fd != -1);
-    if (file.fd != -1) {
-      char rbuffer[128] = {0};
-      char pbuffer[sizeof(rbuffer)] = {0};
-      size_t size = sizeof(rbuffer);
-
-      uint16_t VegaDeviceId = 26287;
-      uint16_t AMDVendorId = 4098;
-      (void)VegaDeviceId;
-      (void)AMDVendorId;
-
-      for (uint32_t VendorId = 0; VendorId < UINT16_MAX; VendorId++) {
-
-        printf("Check vendor %u (0x%04x)\n", VendorId, VendorId);
-
-        for (uint32_t DeviceId = 0; DeviceId < UINT16_MAX; DeviceId++) {
-
-          char *ref = reference(rbuffer, size, VendorId, DeviceId);
-         char *par = pci_ids_lookup(file,
-                                     pbuffer, size, VendorId, DeviceId);
-
-          if (!consistent(ref, par)) {
-            printf("ven/dev %u/%u: ", VendorId, DeviceId);
-            printf("%s ?= %s\n", ref, par);
-          }
-
-          CHECK(consistent(ref, par));
-        }
-      }
-    }
-    pci_ids_destroy(file);
-
-
-    }
-  
-  TEST("") {
-    return;
-    struct pci_ids file = pci_ids_create();
-    CHECK(file.fd != -1);
-    if (file.fd != -1) {
-      char rbuffer[128] = {0};
-      char pbuffer[sizeof(rbuffer)] = {0};
-      size_t size = sizeof(rbuffer);
-
-      uint16_t VegaDeviceId = 26287;
-      uint16_t AMDVendorId = 4098;
-      (void)VegaDeviceId;
-      (void)AMDVendorId;
-
-      for (uint32_t VendorId = 0; VendorId < UINT16_MAX; VendorId++) {
-
-        struct range vendor = find_vendor(
-            (struct range){.start = file.addr, file.addr + file.size},
-            VendorId);
-
-        if (empty_range(vendor)) {
-          // Reference will return "Device xxxx", can check out of line
-          continue;
-        }
-
-        printf("Check vendor %u (0x%04x)\n", VendorId, VendorId);
-
-        for (uint32_t DeviceId = 0; DeviceId < UINT16_MAX; DeviceId++) {
-
-          char *ref = reference(rbuffer, size, VendorId, DeviceId);
-
-          struct range device = find_device(vendor, DeviceId);
-
-          fill_buffer_from_device_range(pbuffer, size, device, DeviceId);
-          char *par = pbuffer;
-
-          if (!consistent(ref, par)) {
-            printf("ven/dev %u/%u: ", VendorId, DeviceId);
-            printf("%s ?= %s\n", ref, par);
-          }
-
-          CHECK(consistent(ref, par));
-        }
-      }
-    }
-    pci_ids_destroy(file);
-  }
+  return buf;
 }
