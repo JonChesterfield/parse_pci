@@ -66,8 +66,6 @@
 #include <unistd.h>
 
 #include <stdio.h>
-// #include "EvilUnit.h"
-// #include "parse.h"
 
 static const char *pci_ids_paths[] = {
     "/usr/share/hwdata/pci.ids", // update-pciids
@@ -165,22 +163,47 @@ static struct range find_vendor(struct range r, uint16_t VendorId)
   return r;
 }
 
-static struct range find_device(struct range r, uint16_t DeviceId) {
-  if (empty_range(r)) {
-    return r;
+struct range trim_whitespace(struct range r) {
+  while (!empty_range(r) && isspace(r.start[0])) {
+    r.start++;
   }
-  assert(r.start[0] == '\n');
+  while (!empty_range(r) && isspace(r.end[-1])) {
+    r.end--;
+  }
+  return r;
+}
 
-  // Start of region is the vendor ID. Skip over it.
+struct range skip_vendor_id(struct range r) {
+  struct range failure = {0, 0};
+
+  // Skip newline
+  assert(r.start[0] == '\n');
   r.start++;
   if (empty_range(r)) {
-    goto fail;
-  }
-  r.start = memchr(r.start, '\n', r.end - r.start);
-  if (!r.start) {
-    goto fail;
+    return failure;
   }
 
+  // Skip rest of line
+  r.start = memchr(r.start, '\n', r.end - r.start);
+  if (!r.start) {
+    return failure;
+  }
+
+  return r;
+}
+
+static struct range find_device(struct range r, uint16_t DeviceId) {
+  struct range failure = {0, 0};
+
+  if (empty_range(r)) {
+    return failure;
+  }
+
+  assert(r.start[0] == '\n');
+  r = skip_vendor_id(r);
+  if (empty_range(r)) {
+    return failure;
+  }
   assert(r.start[0] == '\n');
 
   char needle[6] = "\n\t0000";
@@ -190,42 +213,30 @@ static struct range find_device(struct range r, uint16_t DeviceId) {
     size_t width = r.end - r.start;
 
     if (width < 6) {
-      goto fail;
+      return failure;
     }
 
-    unsigned char *end = memchr(r.start + 1, '\n', width - 1);
-    if (!end) {
-      end = r.end;
+    unsigned char *line_end = memchr(r.start + 1, '\n', width - 1);
+    if (!line_end) {
+      // File may not end with a newline
+      line_end = r.end;
     }
 
     if (memcmp(r.start, needle, sizeof(needle)) == 0) {
-      // matched. Narrow the range to the printed result
-      r.start += 6;
-      r.end = end;
-      // trim leading and trailing whitespace
-      while (!empty_range(r) && isspace(r.start[0])) {
-        r.start++;
-      }
-      while (!empty_range(r) && isspace(r.end[-1])) {
-        r.end--;
-      }
-
-      // trim whitespace from both ends
-      return r;
+      // Success
+      r.start += sizeof(needle);
+      r.end = line_end;
+      return trim_whitespace(r);
     }
 
     if (isxdigit(r.start[1])) {
       // Reached the end of this region
-      goto fail;
+      return failure;
     }
 
     // Otherwise ignore whatever is on the line, e.g. '#'
-
-    r.start = end;
+    r.start = line_end;
   }
-
-fail:
-  return (struct range){0, 0};
 }
 
 static void copy_range_to_buffer(struct range r, char *buf, size_t size) {
@@ -237,8 +248,8 @@ static void copy_range_to_buffer(struct range r, char *buf, size_t size) {
   buf[to_copy] = '\0';
 }
 
-__attribute__((used)) static void
-write_fallback_to_buffer(char *buf, size_t size, uint16_t DeviceId) {
+static void write_fallback_to_buffer(char *buf, size_t size,
+                                     uint16_t DeviceId) {
   char tmp[] = "Device xxxx";
   static_assert(sizeof(tmp) == 12, "");
   write_as_hex(DeviceId, &tmp[7]);
@@ -248,7 +259,7 @@ write_fallback_to_buffer(char *buf, size_t size, uint16_t DeviceId) {
   buf[size - 1] = '\0';
 }
 
-#define CACHE 0
+#define CACHE 1
 
 #if CACHE
 
@@ -348,7 +359,7 @@ char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
 
   struct range whole_file = {
       .start = f.addr,
-      .end = (unsigned char*)f.addr + f.size,
+      .end = (unsigned char *)f.addr + f.size,
   };
 
   struct range vendor = find_vendor(whole_file, VendorId);
