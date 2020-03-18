@@ -16,14 +16,16 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-unsigned char *find_vendor(unsigned char *d, size_t n, uint16_t VendorId) {
+static unsigned char *find_vendor(unsigned char *d, size_t n,
+                                  uint16_t VendorId) {
   char needle[5];
-  sprintf(needle, "\n%04X", VendorId);
+  int rc = sprintf(needle, "\n%04x", VendorId);
+  assert(rc == 5);
   // probably the hot spot
   return memmem(d, n, needle, sizeof(needle));
 }
 
-unsigned char *find_any_vendor(unsigned char *d, size_t n) {
+static unsigned char *find_any_vendor(unsigned char *d, size_t n) {
   // messy
   while (1) {
 
@@ -54,7 +56,9 @@ typedef struct {
   unsigned char *end;
 } range_t;
 
-range_t find_vendor_range(unsigned char *d, size_t n, uint16_t VendorId) {
+static range_t find_vendor_range(unsigned char *d, size_t n,
+                                 uint16_t VendorId) {
+
   unsigned char *start = find_vendor(d, n, VendorId);
   if (start) {
     size_t moved = (unsigned char *)start - (unsigned char *)d;
@@ -68,30 +72,37 @@ range_t find_vendor_range(unsigned char *d, size_t n, uint16_t VendorId) {
     return (range_t){.start = start, .end = end};
   }
 
-  return (range_t){0, 0};
+  return (range_t){d, d};
 }
 
-range_t find_vendor_2(range_t r, uint16_t VendorId)
+static range_t find_vendor_2(range_t r, uint16_t VendorId)
 
-{
-  char needle[5];
-  sprintf(needle, "\n%04X", VendorId);
-  unsigned char *s = memmem(r.start, r.end - r.start, needle, sizeof(needle));
-  if (!s) {
-    r.start = r.end;
-  } else {
+{  
+  char needle[6];
+  int rc = snprintf(needle, sizeof(needle), "\n%04x", VendorId);
+  assert(rc == 5);
+  unsigned char *s = memmem(r.start, r.end - r.start, needle, 5);
+
+ unsigned char *start = find_vendor(r.start, r.end - r.start, VendorId);
+ assert(s == start);
+ 
+  if (s) {
+    // success
     r.start = s;
+  } else {
+    // failed
+    r.start = r.end;
   }
   return r;
 }
 
-range_t find_device_2(range_t r, uint16_t DeviceId) {
+static range_t find_device(range_t r, uint16_t DeviceId) {
   assert(r.start != r.end);
   assert(r.start[0] == '\n');
 
   char needle[7] = {0};
   int rc = sprintf(needle, "\n\t%04x", DeviceId);
-  assert(rc >= 0); // todo: check
+  assert(rc == 6); // todo: check
 
   for (unsigned idx = 0;; idx++) {
     size_t width = r.end - r.start;
@@ -114,7 +125,7 @@ range_t find_device_2(range_t r, uint16_t DeviceId) {
         r.start++;
       }
 
-      if (r.start != r.end) {
+      if (false && r.start != r.end) {
         // TODO: test this logic
         unsigned char *c = r.end;
         c--;
@@ -130,9 +141,8 @@ range_t find_device_2(range_t r, uint16_t DeviceId) {
       return r;
     }
 
-    if (isxdigit(r.start[0])) {
+    if (isxdigit(r.start[1])) {
       // Reached the end of this region
-      printf("Fail at %d\n", __LINE__);
       goto fail;
     }
 
@@ -145,72 +155,35 @@ fail:
   return (range_t){0, 0};
 }
 
-unsigned char *find_device(unsigned char *d, size_t n, uint16_t DeviceId) {
-  // This can handle comments etc
-  char needle[6] = {0};
-  sprintf(needle, "\n\t%04x", DeviceId);
-  return memmem(d, n, needle, sizeof(needle));
-}
-
-char *find_device_within_range(range_t vendor, char *buf, int size,
-                               const uint16_t DeviceId) {
+static char *find_device_within_range(range_t vendor, char *buf, int size,
+                                      const uint16_t DeviceId) {
   assert(vendor.start);
 
-  bool novel = true;
-
-  if (novel) {
-
-    range_t dev_r = find_device_2(vendor, DeviceId);
-    if (dev_r.start == dev_r.end) {
-      snprintf(buf, size - 1, "Device %04x", DeviceId);
-      buf[size - 1] = 0;
-      return buf;
-    } else {
-      // todo: width
-      int to_copy = (int)(dev_r.end - dev_r.start);
-      to_copy = to_copy < (size - 1) ? to_copy : size - 1;
-      memcpy(buf, dev_r.start, to_copy);
-      buf[to_copy] = 0;
-      return buf;
-    }
-  }
-
-  unsigned char *dev =
-      find_device(vendor.start, vendor.end - vendor.start, DeviceId);
-
-  if (!dev) {
+  if (vendor.start == vendor.end) {
     snprintf(buf, size - 1, "Device %04x", DeviceId);
     buf[size - 1] = 0;
     return buf;
   }
 
-  // Found = '\n\txxxx -some-whitespace- string - newline
-  dev += 6; // todo: drop the 6
-
-  // Trim leading whitespace
-  while (dev != vendor.end && isspace(*dev)) {
-    dev++;
+  range_t dev_r = find_device(vendor, DeviceId);
+  if (dev_r.start == dev_r.end) {
+    snprintf(buf, size - 1, "Device %04x", DeviceId);
+    buf[size - 1] = 0;
+    return buf;
+  } else {
+    // todo: width
+    int to_copy = (int)(dev_r.end - dev_r.start);
+    to_copy = to_copy < (size - 1) ? to_copy : size - 1;
+    memcpy(buf, dev_r.start, to_copy);
+    buf[to_copy] = 0;
+    return buf;
   }
-
-  // find next newline or end of file
-  unsigned char *newline = dev;
-  while (newline != vendor.end && *newline != '\n') {
-    newline++;
-  }
-
-  size_t str = newline - dev;
-  size_t to_copy = (int)str < (size - 1) ? str : (size - 1);
-
-  memcpy(buf, dev, to_copy);
-  buf[to_copy] = 0;
-
-  return buf;
 }
 
-char *lookup_name_from_mmap(unsigned char *d, size_t sz,
-                            /*optional struct*/ char *buf, int size,
-                            /* skip flags */ const uint16_t VendorId,
-                            const uint16_t DeviceId, bool *no_vendor) {
+static char *lookup_name_from_mmap(unsigned char *d, size_t sz,
+                                   /*optional struct*/ char *buf, int size,
+                                   /* skip flags */ const uint16_t VendorId,
+                                   const uint16_t DeviceId, bool *no_vendor) {
 
   const bool verbose = true;
 
@@ -222,7 +195,7 @@ char *lookup_name_from_mmap(unsigned char *d, size_t sz,
   }
 
   range_t vendor = find_vendor_range(d, sz, VendorId);
-  if (!vendor.start) {
+  if (vendor.start == vendor.end) {
     //  If this fails, checking all the device IDs is a poor choice
     *no_vendor = true;
 
@@ -242,7 +215,7 @@ typedef struct {
 } mmapped_file_t;
 
 static_assert(sizeof(mmapped_file_t) == 16, "");
-mmapped_file_t open_mmapped_file(void) {
+static mmapped_file_t open_mmapped_file(void) {
 
   const char *path = "pci.ids";
   mmapped_file_t failure = {
@@ -278,7 +251,7 @@ mmapped_file_t open_mmapped_file(void) {
   };
 }
 
-void close_mmapped_file(mmapped_file_t f) {
+static void close_mmapped_file(mmapped_file_t f) {
   if (f.fd != -1) {
     munmap(f.addr, f.size);
     close(f.fd);
@@ -337,9 +310,25 @@ MAIN_MODULE() {
 
       for (uint32_t VendorId = 0; VendorId < UINT16_MAX; VendorId++) {
 
+        range_t vendor2 = find_vendor_2(
+            (range_t){.start = file.addr, file.addr + file.size}, VendorId);
+
         range_t vendor = find_vendor_range(file.addr, file.size, VendorId);
 
-        if (!vendor.start) {
+        if (0) {
+        if(vendor2.start != vendor.start)
+          {
+            printf("vendor1 empty? %u\n", vendor.start == vendor.end);
+            printf("vendor1 %p %p\n", vendor.start, vendor.end);
+            printf("vendor2 empty? %u\n", vendor2.start == vendor2.end);
+            printf("vendor2 %p %p\n", vendor2.start, vendor2.end);
+          }
+        assert(vendor2.start == vendor.start);}
+
+
+       vendor = vendor2;
+        
+        if (vendor.start == vendor.end) {
           // Reference will return "Device xxxx", can check out of line
           continue;
         }
