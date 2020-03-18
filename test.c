@@ -33,8 +33,6 @@ char *reference(char *namebuf, int size, uint16_t VendorId, uint16_t DeviceId) {
   return name;
 }
 
-
-
 static bool consistent(char *ref, char *prop) {
   if (ref && prop) {
     return strcmp(ref, prop) == 0;
@@ -43,19 +41,13 @@ static bool consistent(char *ref, char *prop) {
   }
 }
 
-
-// Fix this - cache should work with oversized buffer
-#ifndef HSA_PUBLIC_NAME_SIZE
-#define HSA_PUBLIC_NAME_SIZE 64
-#endif
-
 MAIN_MODULE() {
 
   TEST("external") {
     struct pci_ids file = pci_ids_create();
     CHECK(file.fd != -1);
     if (file.fd != -1) {
-      char rbuffer[HSA_PUBLIC_NAME_SIZE] = {0};
+      char rbuffer[128] = {0};
       char pbuffer[sizeof(rbuffer)] = {0};
       size_t size = sizeof(rbuffer);
 
@@ -70,8 +62,11 @@ MAIN_MODULE() {
 
         for (uint32_t DeviceId = 0; DeviceId <= UINT16_MAX; DeviceId++) {
 
-          char *ref = reference(rbuffer, size, VendorId, DeviceId);
           char *par = pci_ids_lookup(file, pbuffer, size, VendorId, DeviceId);
+          // hit the exact cache
+          par = pci_ids_lookup(file, pbuffer, size, VendorId, DeviceId);
+
+          char *ref = reference(rbuffer, size, VendorId, DeviceId);
 
           if (!consistent(ref, par)) {
             printf("ven/dev %u/%u: ", VendorId, DeviceId);

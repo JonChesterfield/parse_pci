@@ -65,6 +65,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <stdio.h>
 // #include "EvilUnit.h"
 // #include "parse.h"
 
@@ -247,21 +248,25 @@ write_fallback_to_buffer(char *buf, size_t size, uint16_t DeviceId) {
   buf[size - 1] = '\0';
 }
 
+#define CACHE 0
+
+#if CACHE
 
 #ifndef HSA_PUBLIC_NAME_SIZE
 #define HSA_PUBLIC_NAME_SIZE 64
 #endif
 
-static struct cache {
-  // mutex?
-  uint16_t VendorId;
-  uint16_t DeviceId;
-  uint32_t VendorOffset;          // ~0 if vendor not found
-  char res[HSA_PUBLIC_NAME_SIZE]; // res[0] == '\0' if unavailable
-} instance = {UINT16_MAX, UINT16_MAX, UINT32_MAX, {0}};
-
 char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
                      uint16_t VendorId, uint16_t DeviceId) {
+
+  // Probably want a mutex, but don't want to hold it for the whole routine
+  static struct cache {
+    uint16_t VendorId;
+    uint16_t DeviceId;
+    uint32_t VendorOffset;          // ~0 if vendor not found
+    char res[HSA_PUBLIC_NAME_SIZE]; // res[0] == '\0' if unavailable
+  } instance = {UINT16_MAX, UINT16_MAX, UINT32_MAX, {0}};
+
   if (f.fd == -1) {
     write_fallback_to_buffer(buf, size, DeviceId);
     return buf;
@@ -273,9 +278,10 @@ char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
       return buf;
     }
     if (instance.DeviceId == DeviceId && instance.res[0] != '\0') {
-      if (size <= HSA_PUBLIC_NAME_SIZE) {
-        memcpy(buf, instance.res, size);
-        buf[size - 1] = '\0';
+      size_t len = strlen(instance.res);
+      if (len < size) {
+        memcpy(buf, instance.res, len + 1);
+        assert(buf[len] == '\0');
         return buf;
       }
     }
@@ -319,12 +325,43 @@ char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
   instance.VendorOffset =
       empty_range(vendor) ? UINT32_MAX : vendor.start - whole_file.start;
 
-  if (size <= sizeof(instance.res)) {
-    memcpy(instance.res, buf, size);
-    assert(instance.res[size - 1] == '\0');
+  size_t used = strlen(buf) + 1;
+  if (used < sizeof(instance.res)) {
+    memcpy(instance.res, buf, used);
+    assert(instance.res[used - 1] == '\0');
   } else {
     instance.res[0] = '\0';
   }
 
   return buf;
 }
+
+#else
+
+char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
+                     uint16_t VendorId, uint16_t DeviceId) {
+
+  if (f.fd == -1) {
+    write_fallback_to_buffer(buf, size, DeviceId);
+    return buf;
+  }
+
+  struct range whole_file = {
+      .start = f.addr,
+      .end = (unsigned char*)f.addr + f.size,
+  };
+
+  struct range vendor = find_vendor(whole_file, VendorId);
+
+  struct range device = find_device(vendor, DeviceId);
+
+  if (!empty_range(device)) {
+    copy_range_to_buffer(device, buf, size);
+  } else {
+    write_fallback_to_buffer(buf, size, DeviceId);
+  }
+
+  return buf;
+}
+
+#endif
