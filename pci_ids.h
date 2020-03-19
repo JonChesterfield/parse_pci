@@ -1,5 +1,5 @@
 /*
- * Copyright © 2014 Advanced Micro Devices, Inc.
+ * Copyright © 2020 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -23,8 +23,8 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef PCI_IDS_H
-#define PCI_IDS_H
+#ifndef SRC_PCI_IDS_H_
+#define SRC_PCI_IDS_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -43,4 +43,4 @@ void pci_ids_destroy(struct pci_ids);
 char *pci_ids_lookup(struct pci_ids, char *buf, size_t buf_size,
 		     uint16_t VendorId, uint16_t DeviceId);
 
-#endif
+#endif // SRC_PCI_IDS_H_

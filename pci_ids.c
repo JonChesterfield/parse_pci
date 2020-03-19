@@ -1,5 +1,5 @@
 /*
- * Copyright © 2014 Advanced Micro Devices, Inc.
+ * Copyright © 2020 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -67,7 +67,7 @@
 
 #include <stdio.h>
 
-static const char *pci_ids_paths[] = {
+static const char *const pci_ids_paths[] = {
 	"/usr/share/hwdata/pci.ids", // update-pciids
 	"/usr/share/misc/pci.ids", // debian
 	"/usr/share/pci.ids", // redhat
@@ -82,11 +82,12 @@ static struct pci_ids pci_ids_create_from_file(const char *path)
 	};
 
 	int fd = open(path, O_RDONLY, 0);
-	if (fd == -1) {
+
+	if (fd == -1)
 		return failure;
-	}
 
 	struct stat sb;
+
 	fstat(fd, &sb);
 	size_t sz = sb.st_size;
 
@@ -113,11 +114,12 @@ static struct pci_ids pci_ids_create_from_file(const char *path)
 struct pci_ids pci_ids_create(void)
 {
 	size_t sz = sizeof(pci_ids_paths) / sizeof(pci_ids_paths[0]);
+
 	for (size_t i = 0; i < sz; i++) {
 		struct pci_ids res = pci_ids_create_from_file(pci_ids_paths[i]);
-		if (res.fd != -1) {
+
+		if (res.fd != -1)
 			return res;
-		}
 	}
 
 	return (struct pci_ids){ .fd = -1 };
@@ -143,9 +145,10 @@ static bool empty_range(struct range r)
 
 static void write_as_hex(uint16_t x, char *b)
 {
-	const char digits[] = "0123456789abcdef";
-	for (unsigned i = 0; i < 4; i++) {
-		unsigned index = 0xf & (x >> 4 * (3 - i));
+	static const char digits[] = "0123456789abcdef";
+
+	for (unsigned int i = 0; i < 4; i++) {
+		unsigned int index = 0xf & (x >> 4 * (3 - i));
 		b[i] = digits[index];
 	}
 }
@@ -153,11 +156,11 @@ static void write_as_hex(uint16_t x, char *b)
 static struct range find_vendor(struct range r, uint16_t VendorId)
 
 {
-	if (empty_range(r)) {
+	if (empty_range(r))
 		return r;
-	}
 
 	char needle[5] = "\n0000";
+
 	write_as_hex(VendorId, &needle[1]);
 	unsigned char *s =
 		memmem(r.start, r.end - r.start, needle, sizeof(needle));
@@ -173,31 +176,29 @@ static struct range find_vendor(struct range r, uint16_t VendorId)
 
 static struct range trim_whitespace(struct range r)
 {
-	while (!empty_range(r) && isspace(r.start[0])) {
+	while (!empty_range(r) && isspace(r.start[0]))
 		r.start++;
-	}
-	while (!empty_range(r) && isspace(r.end[-1])) {
+
+	while (!empty_range(r) && isspace(r.end[-1]))
 		r.end--;
-	}
+
 	return r;
 }
 
 static struct range skip_vendor_id(struct range r)
 {
-	struct range failure = { 0, 0 };
+	const struct range failure = { 0, 0 };
 
 	// Skip newline
 	assert(r.start[0] == '\n');
 	r.start++;
-	if (empty_range(r)) {
+	if (empty_range(r))
 		return failure;
-	}
 
 	// Skip rest of line
 	r.start = memchr(r.start, '\n', r.end - r.start);
-	if (!r.start) {
+	if (!r.start)
 		return failure;
-	}
 
 	return r;
 }
@@ -212,22 +213,23 @@ static struct range find_device(struct range r, uint16_t DeviceId)
 
 	assert(r.start[0] == '\n');
 	r = skip_vendor_id(r);
-	if (empty_range(r)) {
+	if (empty_range(r))
 		return failure;
-	}
+
 	assert(r.start[0] == '\n');
 
 	char needle[6] = "\n\t0000";
+
 	write_as_hex(DeviceId, &needle[2]);
 
 	for (;;) {
 		size_t width = r.end - r.start;
 
-		if (width < sizeof(needle)) {
+		if (width < sizeof(needle))
 			return failure;
-		}
 
 		unsigned char *line_end = memchr(r.start + 1, '\n', width - 1);
+
 		if (!line_end) {
 			// File may not end with a newline
 			line_end = r.end;
@@ -263,10 +265,12 @@ static void copy_range_to_buffer(struct range r, char *buf, size_t size)
 static void write_fallback_to_buffer(char *buf, size_t size, uint16_t DeviceId)
 {
 	char tmp[] = "Device xxxx";
+
 	static_assert(sizeof(tmp) == 12, "");
 	write_as_hex(DeviceId, &tmp[7]);
 
 	size_t to_copy = (sizeof(tmp) <= size) ? sizeof(tmp) : size;
+
 	memcpy(buf, tmp, to_copy);
 	buf[size - 1] = '\0';
 }
@@ -312,7 +316,7 @@ char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
 
 	struct range whole_file = {
 		.start = f.addr,
-		.end = f.addr + f.size,
+		.end = (unsigned char *)f.addr + f.size,
 	};
 
 	struct range vendor = { 0, 0 };
@@ -322,7 +326,7 @@ char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
 		uint32_t off = instance.VendorOffset;
 		char needle[5] = "\n0000";
 		if ((off + sizeof(needle)) < f.size) {
-			unsigned char *guess = f.addr + off;
+			unsigned char *guess = (unsigned char *)f.addr + off;
 			write_as_hex(VendorId, &needle[1]);
 			if (memcmp(guess, needle, sizeof(needle)) == 0) {
 				vendor.start = guess;
