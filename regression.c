@@ -47,7 +47,7 @@ static bool consistent(char *ref, char *prop)
 	}
 }
 
-MAIN_MODULE()
+MODULE(regression)
 {
 	TEST("external")
 	{
