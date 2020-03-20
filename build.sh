@@ -11,4 +11,6 @@ $OPT -strip-debug pci_ids.bc -S -o pci_ids.ll
 
 $CC pci_ids.bc regression.o -o pci_ids -lpci
 
+time ./pci_ids
+exit 0
 time valgrind --leak-check=no ./pci_ids

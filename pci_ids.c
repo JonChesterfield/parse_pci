@@ -159,7 +159,7 @@ static struct range find_vendor(struct range r, uint16_t VendorId)
 	if (empty_range(r))
 		return r;
 
-	char needle[5] = {'\n'};
+	char needle[5] = { '\n' };
 
 	write_as_hex(VendorId, &needle[1]);
 	unsigned char *s =
@@ -189,8 +189,11 @@ static struct range skip_vendor_id(struct range r)
 {
 	const struct range failure = { 0, 0 };
 
-	// Skip newline
-	assert(r.start[0] == '\n');
+	assert(!empty_range(r));
+	// Expect an initial newline to skip over
+	if (r.start[0] != '\n')
+		return failure;
+
 	r.start++;
 	if (empty_range(r))
 		return failure;
@@ -210,14 +213,13 @@ static struct range find_device(struct range r, uint16_t DeviceId)
 	if (empty_range(r))
 		return failure;
 
-	assert(r.start[0] == '\n');
 	r = skip_vendor_id(r);
 	if (empty_range(r))
 		return failure;
 
 	assert(r.start[0] == '\n');
 
-	char needle[6] = {'\n', '\t'};
+	char needle[6] = { '\n', '\t' };
 
 	write_as_hex(DeviceId, &needle[2]);
 
@@ -283,36 +285,84 @@ static void write_fallback_to_buffer(char *buf, size_t size, uint16_t DeviceId)
 #define HSA_PUBLIC_NAME_SIZE 64
 #endif
 
-char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
-		     uint16_t VendorId, uint16_t DeviceId)
+// Probably want a mutex, but don't want to hold it for the whole routine
+static struct cache {
+	uint16_t VendorId;
+	uint16_t DeviceId;
+	uint32_t VendorOffset; // ~0 if vendor not found
+	char res[HSA_PUBLIC_NAME_SIZE]; // res[0] == '\0' if unavailable
+} instance = { UINT16_MAX, UINT16_MAX, UINT32_MAX, { 0 } };
+
+char *cache_hit_or_null(struct cache *instance, char *buf, size_t size,
+			uint16_t VendorId, uint16_t DeviceId)
 {
-	// Probably want a mutex, but don't want to hold it for the whole routine
-	static struct cache {
-		uint16_t VendorId;
-		uint16_t DeviceId;
-		uint32_t VendorOffset; // ~0 if vendor not found
-		char res[HSA_PUBLIC_NAME_SIZE]; // res[0] == '\0' if unavailable
-	} instance = { UINT16_MAX, UINT16_MAX, UINT32_MAX, { 0 } };
-
-	if (f.fd == -1) {
-		write_fallback_to_buffer(buf, size, DeviceId);
-		return buf;
-	}
-
-	if (instance.VendorId == VendorId) {
-		if (instance.VendorOffset == UINT32_MAX) {
+	if (instance->VendorId == VendorId) {
+		if (instance->VendorOffset == UINT32_MAX) {
 			write_fallback_to_buffer(buf, size, DeviceId);
 			return buf;
 		}
-		if (instance.DeviceId == DeviceId && instance.res[0] != '\0') {
-			size_t len = strlen(instance.res);
+		if (instance->DeviceId == DeviceId &&
+		    instance->res[0] != '\0') {
+			size_t len = strlen(instance->res);
 			if (len < size) {
-				memcpy(buf, instance.res, len + 1);
+				memcpy(buf, instance->res, len + 1);
 				assert(buf[len] == '\0');
 				return buf;
 			}
 		}
 	}
+
+	return NULL;
+}
+
+void cache_maybe_populate_vendor(struct cache *instance, struct pci_ids f,
+				 struct range *vendor, uint16_t VendorId)
+{
+	if (instance->VendorId == VendorId) {
+		// Attempt to populate the vendor location from cache
+		uint32_t off = instance->VendorOffset;
+		char needle[5] = { '\n' };
+		if ((off + sizeof(needle)) < f.size) {
+			unsigned char *guess = (unsigned char *)f.addr + off;
+			write_as_hex(VendorId, &needle[1]);
+			if (memcmp(guess, needle, sizeof(needle)) == 0) {
+				vendor->start = guess;
+				vendor->end = (unsigned char *)f.addr + f.size;
+			}
+		}
+	}
+}
+
+void cache_record_last(struct cache *instance, uint16_t VendorId,
+		       uint16_t DeviceId, struct range vendor,
+		       struct range whole_file, char *buf)
+{
+	instance->VendorId = VendorId;
+	instance->DeviceId = DeviceId;
+	instance->VendorOffset = empty_range(vendor) ?
+					 UINT32_MAX :
+					 vendor.start - whole_file.start;
+
+	size_t used = strlen(buf) + 1;
+	if (used < sizeof(instance->res)) {
+		memcpy(instance->res, buf, used);
+		assert(instance->res[used - 1] == '\0');
+	} else {
+		instance->res[0] = '\0';
+	}
+}
+
+char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
+		     uint16_t VendorId, uint16_t DeviceId)
+{
+	if (f.fd == -1) {
+		write_fallback_to_buffer(buf, size, DeviceId);
+		return buf;
+	}
+
+	char *r = cache_hit_or_null(&instance, buf, size, VendorId, DeviceId);
+	if (r)
+		return r;
 
 	struct range whole_file = {
 		.start = f.addr,
@@ -321,19 +371,7 @@ char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
 
 	struct range vendor = { 0, 0 };
 
-	if (instance.VendorId == VendorId) {
-		// Attempt to populate the vendor location from cache
-		uint32_t off = instance.VendorOffset;
-		char needle[5] = {'\n'};
-		if ((off + sizeof(needle)) < f.size) {
-			unsigned char *guess = (unsigned char *)f.addr + off;
-			write_as_hex(VendorId, &needle[1]);
-			if (memcmp(guess, needle, sizeof(needle)) == 0) {
-				vendor.start = guess;
-				vendor.end = whole_file.end;
-			}
-		}
-	}
+	cache_maybe_populate_vendor(&instance, f, &vendor, VendorId);
 
 	if (empty_range(vendor)) {
 		vendor = find_vendor(whole_file, VendorId);
@@ -347,20 +385,8 @@ char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
 		write_fallback_to_buffer(buf, size, DeviceId);
 	}
 
-	instance.VendorId = VendorId;
-	instance.DeviceId = DeviceId;
-	instance.VendorOffset = empty_range(vendor) ?
-					UINT32_MAX :
-					vendor.start - whole_file.start;
-
-	size_t used = strlen(buf) + 1;
-	if (used < sizeof(instance.res)) {
-		memcpy(instance.res, buf, used);
-		assert(instance.res[used - 1] == '\0');
-	} else {
-		instance.res[0] = '\0';
-	}
-
+	cache_record_last(&instance, VendorId, DeviceId, vendor, whole_file,
+			  buf);
 	return buf;
 }
 
