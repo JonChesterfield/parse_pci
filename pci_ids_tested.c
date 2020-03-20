@@ -43,28 +43,66 @@ struct range make_range(const char *str)
 	};
 }
 
-static MODULE(trim)
+void dump_range(struct range r)
 {
-	TEST("")
+	int size = r.end - r.start;
+	char *tmp = malloc(size + 1);
+	assert(tmp);
+	memcpy(tmp, r.start, size);
+	tmp[size] = '\0';
+	printf("%d:%.*s\n", size, size, tmp);
+	free(tmp);
+}
+
+#define CHECKR(X, Y)                                                           \
+	{                                                                      \
+		struct range a = X;                                            \
+		struct range b = Y;                                            \
+		CHECK(equal_range(a, b));                                      \
+		if (!equal_range(a, b)) {                                      \
+			dump_range(a);                                         \
+			dump_range(b);                                         \
+		}                                                              \
+	}
+
+static MODULE(util)
+{
+	const struct range fail = make_range("");
+
+	TEST("trim")
 	{
-		CHECK(equal_range(trim_whitespace(make_range("")),
-				  trim_whitespace(make_range(" \n \t "))));
+		CHECKR(make_range(""), trim_whitespace(make_range(" \n \t ")));
 
-		CHECK(equal_range(trim_whitespace(make_range("leading")),
-				  trim_whitespace(make_range("\vleading"))));
+		CHECKR(make_range("leading"),
+		       trim_whitespace(make_range("\vleading")));
 
-		CHECK(equal_range(trim_whitespace(make_range("trailing")),
-				  trim_whitespace(make_range("trailing\n"))));
+		CHECKR(make_range("trailing"),
+		       trim_whitespace(make_range("trailing\n")));
 
-		CHECK(equal_range(trim_whitespace(make_range("both")),
-				  trim_whitespace(make_range(" \n\tboth  \r"))));
+		CHECKR(make_range("both"),
+		       trim_whitespace(make_range(" \n\tboth  \r")));
+	}
+
+	TEST("skip_vendor_id")
+	{
+		CHECKR(fail, skip_vendor_id(make_range("\n")));
+
+		CHECKR(fail, skip_vendor_id(make_range("\nA")));
+
+		CHECKR(fail, skip_vendor_id(make_range("\n\tn")));
+
+		CHECKR(make_range("\n"), skip_vendor_id(make_range("\n\n")));
+
+		CHECKR(make_range("\n\t1234 stuff"),
+		       skip_vendor_id(make_range("\nabcd Extra things\n"
+						 "\t1234 stuff")));
 	}
 }
 
 MAIN_MODULE()
 {
 	DEPENDS(write_as_hex);
-	DEPENDS(trim);
+	DEPENDS(util);
 	CHECK(equal_range(make_range(""), make_range("")));
 
 	// DEPENDS(regression);
