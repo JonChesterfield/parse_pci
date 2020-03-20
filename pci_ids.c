@@ -159,7 +159,7 @@ static struct range find_vendor(struct range r, uint16_t VendorId)
 	if (empty_range(r))
 		return r;
 
-	char needle[5] = "\n0000";
+	char needle[5] = {'\n'};
 
 	write_as_hex(VendorId, &needle[1]);
 	unsigned char *s =
@@ -207,9 +207,9 @@ static struct range find_device(struct range r, uint16_t DeviceId)
 {
 	struct range failure = { 0, 0 };
 
-	if (empty_range(r)) {
+	if (empty_range(r)) 
 		return failure;
-	}
+	
 
 	assert(r.start[0] == '\n');
 	r = skip_vendor_id(r);
@@ -218,7 +218,7 @@ static struct range find_device(struct range r, uint16_t DeviceId)
 
 	assert(r.start[0] == '\n');
 
-	char needle[6] = "\n\t0000";
+	char needle[6] = {'\n', '\t'};
 
 	write_as_hex(DeviceId, &needle[2]);
 
@@ -256,6 +256,7 @@ static void copy_range_to_buffer(struct range r, char *buf, size_t size)
 {
 	assert(!empty_range(r));
 	size_t to_copy = (r.end - r.start);
+
 	to_copy = to_copy < (size - 1) ? to_copy : size - 1;
 
 	memcpy(buf, r.start, to_copy);
@@ -324,7 +325,7 @@ char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
 	if (instance.VendorId == VendorId) {
 		// Attempt to populate the vendor location from cache
 		uint32_t off = instance.VendorOffset;
-		char needle[5] = "\n0000";
+		char needle[5] = {'\n'};
 		if ((off + sizeof(needle)) < f.size) {
 			unsigned char *guess = (unsigned char *)f.addr + off;
 			write_as_hex(VendorId, &needle[1]);

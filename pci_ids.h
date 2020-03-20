@@ -37,10 +37,10 @@ struct pci_ids {
 
 // Sixteen byte struct is passed in registers. Avoids calling malloc/free.
 struct pci_ids pci_ids_create(void);
-void pci_ids_destroy(struct pci_ids);
+void pci_ids_destroy(struct pci_ids pacc);
 
 // Writes to buf. Returns buf. Does not fail.
-char *pci_ids_lookup(struct pci_ids, char *buf, size_t buf_size,
+char *pci_ids_lookup(struct pci_ids pacc, char *buf, size_t buf_size,
 		     uint16_t VendorId, uint16_t DeviceId);
 
 #endif // SRC_PCI_IDS_H_
