@@ -207,9 +207,8 @@ static struct range find_device(struct range r, uint16_t DeviceId)
 {
 	struct range failure = { 0, 0 };
 
-	if (empty_range(r)) 
+	if (empty_range(r))
 		return failure;
-	
 
 	assert(r.start[0] == '\n');
 	r = skip_vendor_id(r);
@@ -384,11 +383,10 @@ char *pci_ids_lookup(struct pci_ids f, char *buf, size_t size,
 
 	struct range device = find_device(vendor, DeviceId);
 
-	if (!empty_range(device)) {
+	if (!empty_range(device))
 		copy_range_to_buffer(device, buf, size);
-	} else {
+	else
 		write_fallback_to_buffer(buf, size, DeviceId);
-	}
 
 	return buf;
 }
